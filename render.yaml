@@ -1,0 +1,53 @@
+# render.yaml
+# Render Blueprint — defines both services in one file.
+# Place this at the ROOT of your GitHub repository.
+# Render reads it automatically when you connect your repo.
+
+services:
+  # ── Node.js Backend ──────────────────────────────────────────
+  - type: web
+    name: shadow-network-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      # Set these in Render dashboard (don't commit secrets to git):
+      - key: MONGO_URI
+        sync: false          # You paste this in Render dashboard
+      - key: PINATA_API_KEY
+        sync: false
+      - key: PINATA_SECRET_KEY
+        sync: false
+      - key: PINATA_GATEWAY
+        value: https://gateway.pinata.cloud
+      - key: AI_ENGINE_URL
+        sync: false          # Will be the URL of your AI engine service below
+
+  # ── Python AI Engine ─────────────────────────────────────────
+  - type: web
+    name: shadow-network-ai
+    runtime: python
+    rootDir: ai-engine
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      - key: SUMMARIZATION_MODEL
+        value: facebook/bart-large-cnn
+      - key: QA_MODEL
+        value: deepset/roberta-base-squad2
+      - key: EMBEDDING_MODEL
+        value: sentence-transformers/all-MiniLM-L6-v2
+      - key: SUMMARY_MAX_LENGTH
+        value: 200
+      - key: SUMMARY_MIN_LENGTH
+        value: 50
+      # IPFS_GATEWAY points to Pinata public gateway
+      - key: IPFS_GATEWAY
+        value: https://gateway.pinata.cloud

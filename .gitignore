@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment files
+.env
+backend/.env
+ai-engine/.env
+frontend/.env
+frontend/.env.local
+
+# Build outputs
+frontend/build/
+frontend/.vercel/
+
+# FAISS runtime data
+ai-engine/data/embeddings.faiss
+ai-engine/data/id_map.json
+
+# Cache
+frontend/node_modules/.cache/
+.cache/
+
+# macOS
+.DS_Store
+frontend/src/.DS_Store
+**/.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
