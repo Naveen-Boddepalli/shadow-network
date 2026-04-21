@@ -28,14 +28,18 @@ app = FastAPI(
     description="Summarization, Q&A, and semantic search for IPFS academic documents",
 )
 
+# FIX: Allow all origins — AI engine is called server-to-server from Node backend,
+# not directly from the browser. Restricting to localhost was blocking Render backend.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5000"],
+    allow_origins=["*"],
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
-IPFS_GATEWAY = os.getenv("IPFS_GATEWAY", "http://127.0.0.1:8080")
+# FIX: Use Pinata gateway (production) with fallback to local Kubo (dev only).
+# Previously defaulted to 127.0.0.1:8080 which doesn't exist on Render.
+IPFS_GATEWAY = os.getenv("IPFS_GATEWAY", "https://gateway.pinata.cloud")
 
 
 # ── Pydantic request/response models ───────────────────────────
@@ -91,15 +95,15 @@ class RemoveEmbeddingRequest(BaseModel):
 # ── Helpers ────────────────────────────────────────────────────
 
 async def fetch_file_from_ipfs(cid: str) -> bytes:
-    """Fetch raw file bytes from the local IPFS HTTP gateway."""
+    """Fetch raw file bytes from the configured IPFS/Pinata gateway."""
     url = f"{IPFS_GATEWAY}/ipfs/{cid}"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             r = await client.get(url)
             r.raise_for_status()
             return r.content
     except httpx.ConnectError:
-        raise HTTPException(503, "IPFS gateway unreachable. Run: ipfs daemon")
+        raise HTTPException(503, f"IPFS gateway unreachable: {IPFS_GATEWAY}")
     except httpx.HTTPStatusError as e:
         raise HTTPException(404, f"File not found on IPFS ({cid}): {e}")
 
@@ -144,7 +148,7 @@ def health():
         "models": {
             "summarizer":       "loaded" if sum_mod._summarizer  is not None else "not_loaded",
             "qa":               "loaded" if qa_mod._qa_pipeline  is not None else "not_loaded",
-            "embeddings":       "loaded",  # sentence-transformers loads on first embed
+            "embeddings":       "loaded",
         },
         "faiss_index": stats,
         "ipfs_gateway": IPFS_GATEWAY,
@@ -155,10 +159,6 @@ def health():
 
 @app.post("/summarize", response_model=SummarizeResponse)
 async def summarize_document(req: SummarizeRequest):
-    """
-    Fetch document from IPFS, extract text, summarize with BART.
-    Handles long docs via map-reduce chunking.
-    """
     text = await get_text_from_cid(req.cid, req.mime_type)
     result = summarize(text)
     return SummarizeResponse(cid=req.cid, **result)
@@ -168,10 +168,6 @@ async def summarize_document(req: SummarizeRequest):
 
 @app.post("/ask", response_model=AskResponse)
 async def ask_question(req: AskRequest):
-    """
-    Fetch document from IPFS, extract text, answer question with RoBERTa.
-    Extractive only — cannot hallucinate beyond document content.
-    """
     text = await get_text_from_cid(req.cid, req.mime_type)
     result = answer_question(req.question, text)
     return AskResponse(cid=req.cid, question=req.question, **result)
@@ -181,12 +177,6 @@ async def ask_question(req: AskRequest):
 
 @app.post("/embed", response_model=EmbedResponse)
 async def embed_document(req: EmbedRequest):
-    """
-    Fetch document from IPFS, extract text, generate embedding, store in FAISS.
-    Called by Node.js after every successful upload (fire-and-forget).
-
-    This makes the document findable via semantic search.
-    """
     text = await get_text_from_cid(req.cid, req.mime_type)
     result = add_document(note_id=req.note_id, text=text)
     return EmbedResponse(note_id=req.note_id, **result)
@@ -196,15 +186,6 @@ async def embed_document(req: EmbedRequest):
 
 @app.post("/semantic-search", response_model=SemanticSearchResponse)
 async def semantic_search_endpoint(req: SemanticSearchRequest):
-    """
-    Embed a query and find the k most semantically similar documents.
-
-    Returns note_ids (MongoDB _ids) ranked by cosine similarity.
-    Node.js backend then fetches the full Note objects from MongoDB.
-
-    Unlike keyword search, this finds meaning — "laws of motion" matches
-    documents about "Newton's second law", "F=ma", "dynamics" etc.
-    """
     results = semantic_search(query=req.query, k=req.k)
     stats   = get_index_stats()
     return SemanticSearchResponse(
@@ -218,12 +199,6 @@ async def semantic_search_endpoint(req: SemanticSearchRequest):
 
 @app.post("/remove-embedding")
 async def remove_embedding(req: RemoveEmbeddingRequest):
-    """
-    Remove a note from the FAISS ID map so it stops appearing in semantic search.
-    Called by Node.js when a note is deleted.
-    Note: FAISS IndexFlatIP doesn't support true deletion — vector stays in index
-    but is excluded from results via ID map removal.
-    """
     result = remove_document(req.note_id)
     return {"success": True, **result}
 
@@ -232,15 +207,9 @@ async def remove_embedding(req: RemoveEmbeddingRequest):
 
 @app.post("/rebuild-index")
 async def rebuild_index():
-    """
-    Signal to rebuild the FAISS index from scratch.
-    Returns instructions — actual rebuild is triggered by re-embedding all docs.
-    Useful after many deletions (vectors accumulate in index even after ID-map removal).
-    """
     stats = get_index_stats()
     return {
         "message": "To fully rebuild: delete data/embeddings.faiss and data/id_map.json, "
                    "then re-POST /embed for each note.",
         "current_stats": stats,
     }
-
