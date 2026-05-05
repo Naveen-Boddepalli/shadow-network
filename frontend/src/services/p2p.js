@@ -1,6 +1,5 @@
 // src/services/p2p.js
-// P2P service using Helia + libp2p
-// Lazy loaded only when P2P mode is enabled
+// Helia + libp2p browser P2P — with identify service fix
 
 let heliaNode = null;
 let unixFsInstance = null;
@@ -8,25 +7,39 @@ let unixFsInstance = null;
 export const initHelia = async () => {
   if (heliaNode) return { helia: heliaNode, fs: unixFsInstance };
   try {
-    const [
-      { createHelia },
-      { unixfs },
-      { MemoryBlockstore },
-      { MemoryDatastore },
-    ] = await Promise.all([
-      import('helia'),
-      import('@helia/unixfs'),
-      import('blockstore-core/memory'),
-      import('datastore-core/memory'),
-    ]);
+    const { createHelia }        = await import('helia');
+    const { unixfs }             = await import('@helia/unixfs');
+    const { createLibp2p }       = await import('libp2p');
+    const { webSockets }         = await import('@libp2p/websockets');
+    const { noise }              = await import('@chainsafe/libp2p-noise');
+    const { yamux }              = await import('@chainsafe/libp2p-yamux');
+    const { identify }           = await import('@libp2p/identify');
+    const { MemoryBlockstore }   = await import('blockstore-core');
+    const { MemoryDatastore }    = await import('datastore-core');
+
     const blockstore = new MemoryBlockstore();
     const datastore  = new MemoryDatastore();
-    heliaNode        = await createHelia({ blockstore, datastore });
-    unixFsInstance   = unixfs(heliaNode);
-    console.log('✅ Helia node ready');
+
+    const libp2p = await createLibp2p({
+      transports:  [webSockets()],
+      connectionEncrypters: [noise()],
+      streamMuxers: [yamux()],
+      services: {
+        identify: identify(),   // ← fixes the error you saw
+      },
+    });
+
+    heliaNode      = await createHelia({ libp2p, blockstore, datastore });
+    unixFsInstance = unixfs(heliaNode);
+
+    heliaNode.libp2p.addEventListener('peer:connect', (evt) => {
+      console.log('✅ Peer connected:', evt.detail.toString());
+    });
+
+    console.log('✅ Helia node ready:', heliaNode.libp2p.peerId.toString());
     return { helia: heliaNode, fs: unixFsInstance };
   } catch (err) {
-    console.error('Helia init failed:', err);
+    console.error('❌ Helia init failed:', err);
     throw err;
   }
 };
@@ -34,7 +47,11 @@ export const initHelia = async () => {
 export const uploadToHelia = async (file) => {
   const { fs } = await initHelia();
   const buffer = await file.arrayBuffer();
-  const cid    = await fs.addFile({ path: file.name, content: new Uint8Array(buffer) });
+  const cid    = await fs.addFile({
+    path: file.name,
+    content: new Uint8Array(buffer),
+  });
+  console.log('📦 File added to Helia:', cid.toString());
   return cid.toString();
 };
 
@@ -47,7 +64,10 @@ export const downloadFromHelia = async (cidString) => {
   const total  = chunks.reduce((s, c) => s + c.length, 0);
   const result = new Uint8Array(total);
   let offset   = 0;
-  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
   return result;
 };
 
@@ -56,13 +76,18 @@ export const getP2PStatus = async () => {
   const peers = heliaNode.libp2p?.getPeers() || [];
   return {
     initialized: true,
-    peerId:  heliaNode.libp2p?.peerId?.toString() || null,
-    peers:   peers.length,
-    peerIds: peers.map((p) => p.toString()),
-    started: true,
+    peerId:      heliaNode.libp2p?.peerId?.toString() || null,
+    peers:       peers.length,
+    peerIds:     peers.map((p) => p.toString()),
+    started:     heliaNode.libp2p?.status === 'started',
   };
 };
 
 export const stopHelia = async () => {
-  if (heliaNode) { await heliaNode.stop(); heliaNode = null; unixFsInstance = null; }
+  if (heliaNode) {
+    await heliaNode.stop();
+    heliaNode      = null;
+    unixFsInstance = null;
+    console.log('🛑 Helia node stopped');
+  }
 };
