@@ -1,0 +1,40 @@
+name: Render Deployments
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-backend:
+    name: Deploy Backend
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write # Required to post the deployment status to GitHub
+    steps:
+      - name: Deploy to Render
+        uses: JorgeLNJunior/render-deploy@v1.4.4
+        with:
+          # You will need to add these secrets in GitHub (Settings > Secrets and variables > Actions)
+          service_id: ${{ secrets.RENDER_SERVICE_ID_BACKEND }}
+          api_key: ${{ secrets.RENDER_API_KEY }}
+          clear_cache: false
+          wait_deploy: true # Wait for the deployment to finish
+          github_deployment: true # Creates the native GitHub Deployment status
+          deployment_environment: production # Shows up as "production" in GitHub
+
+  deploy-ai-engine:
+    name: Deploy AI Engine
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+    steps:
+      - name: Deploy to Render
+        uses: JorgeLNJunior/render-deploy@v1.4.4
+        with:
+          service_id: ${{ secrets.RENDER_SERVICE_ID_AI }}
+          api_key: ${{ secrets.RENDER_API_KEY }}
+          clear_cache: false
+          wait_deploy: true
+          github_deployment: true
+          deployment_environment: production
