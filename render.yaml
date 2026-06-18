@@ -51,3 +51,9 @@ services:
       # IPFS_GATEWAY points to Pinata public gateway
       - key: IPFS_GATEWAY
         value: https://gateway.pinata.cloud
+      # MongoDB Atlas — persistent vector search storage
+      # Paste your Atlas connection string in the Render dashboard (do not commit to git)
+      - key: MONGO_URI
+        sync: false
+      - key: MONGO_DB_NAME
+        value: shadow-network

@@ -18,6 +18,7 @@ from embeddings import (
     remove_document,
     get_index_stats,
     embed_text,
+    rebuild_index_from_mongo,
 )
 
 load_dotenv()
@@ -150,7 +151,7 @@ def health():
             "qa":               "loaded" if qa_mod._qa_pipeline  is not None else "not_loaded",
             "embeddings":       "loaded",
         },
-        "faiss_index": stats,
+        "vector_search": stats,
         "ipfs_gateway": IPFS_GATEWAY,
     }
 
@@ -205,11 +206,22 @@ async def remove_embedding(req: RemoveEmbeddingRequest):
 
 # ── Phase 4: Rebuild index ──────────────────────────────────────
 
+class RebuildRequest(BaseModel):
+    notes: list[dict]  # [{ "note_id": str, "text": str }, ...]
+
 @app.post("/rebuild-index")
-async def rebuild_index():
-    stats = get_index_stats()
-    return {
-        "message": "To fully rebuild: delete data/embeddings.faiss and data/id_map.json, "
-                   "then re-POST /embed for each note.",
-        "current_stats": stats,
-    }
+async def rebuild_index(req: RebuildRequest | None = None):
+    """
+    Re-embed a list of { note_id, text } documents and upsert them into Atlas.
+    Called after a schema migration or to back-fill missing embeddings.
+    If no body is provided, returns current index stats.
+    """
+    if req is None or not req.notes:
+        stats = get_index_stats()
+        return {
+            "message": "POST with body { \"notes\": [{ \"note_id\": \"...\", \"text\": \"...\" }] } to re-index.",
+            "current_stats": stats,
+        }
+
+    result = rebuild_index_from_mongo(req.notes)
+    return {"success": True, **result}

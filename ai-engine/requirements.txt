@@ -9,6 +9,6 @@ sentencepiece==0.1.99
 python-multipart==0.0.6
 pydantic==2.5.3
 python-dotenv==1.0.0
-faiss-cpu==1.7.4
+pymongo[srv]==4.6.1
 sentence-transformers==2.3.1
 numpy==1.26.3
