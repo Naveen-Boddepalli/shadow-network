@@ -116,6 +116,9 @@ async def get_text_from_cid(cid: str, mime_type: str) -> str:
         return extract_text(file_bytes, mime_type)
     except ValueError as e:
         raise HTTPException(422, str(e))
+    except Exception as e:
+        # pdfplumber can throw PDFSyntaxError, struct.error, etc.
+        raise HTTPException(422, f"Text extraction failed ({type(e).__name__}): {e}")
 
 
 # ── Routes ─────────────────────────────────────────────────────
@@ -186,17 +189,18 @@ async def ask_question(req: AskRequest):
 
 @app.post("/embed", response_model=EmbedResponse)
 async def embed_document(req: EmbedRequest):
-    # Step 1: Fetch text from IPFS
-    text = await get_text_from_cid(req.cid, req.mime_type)
-    # Step 2: Embed + upsert into MongoDB
     try:
+        # Step 1: Fetch text from IPFS and extract
+        text = await get_text_from_cid(req.cid, req.mime_type)
+        # Step 2: Embed + upsert into MongoDB
         result = add_document(note_id=req.note_id, text=text)
+        return EmbedResponse(note_id=req.note_id, **result)
+    except HTTPException:
+        raise  # re-raise 404/422/503 from helpers as-is
     except RuntimeError as e:
-        # e.g. MONGO_URI not set, Atlas IP blocked, index not found
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
-    return EmbedResponse(note_id=req.note_id, **result)
+        raise HTTPException(status_code=500, detail=f"Embed pipeline failed ({type(e).__name__}): {e}")
 
 
 # ── Phase 4: Semantic search ────────────────────────────────────
