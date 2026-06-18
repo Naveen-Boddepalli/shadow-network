@@ -78,7 +78,11 @@ const uploadToKubo = async (fileBuffer, fileName) => {
   const { create } = require('kubo-rpc-client');
   const ipfs = create({ host: process.env.IPFS_HOST || '127.0.0.1', port: 5001, protocol: 'http' });
   const result = await ipfs.add({ path: fileName, content: fileBuffer }, { wrapWithDirectory: false });
-  return result.cid.toString();
+  const cid = result.cid.toString();
+  // Explicitly pin the file so it survives garbage collection runs.
+  // `ipfs.add` adds to the blockstore but does not guarantee a persistent pin.
+  await ipfs.pin.add(cid);
+  return cid;
 };
 
 // ── Health check ───────────────────────────────────────────────
