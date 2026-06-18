@@ -4,29 +4,60 @@ on:
   push:
     branches:
       - main
+    paths:
+      # Only run this entire workflow if files in these paths change
+      - 'backend/**'
+      - 'ai-engine/**'
+      - '.github/workflows/render-deployments.yml'
+      - 'render.yaml'
 
 jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      ai_engine: ${{ steps.filter.outputs.ai_engine }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/render-deployments.yml'
+              - 'render.yaml'
+            ai_engine:
+              - 'ai-engine/**'
+              - '.github/workflows/render-deployments.yml'
+              - 'render.yaml'
+
   deploy-backend:
     name: Deploy Backend
+    needs: changes
+    # Only run if backend files changed
+    if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-latest
     permissions:
-      deployments: write # Required to post the deployment status to GitHub
+      deployments: write
     steps:
       - name: Deploy to Render
         uses: JorgeLNJunior/render-deploy@v1.4.4
         with:
-          # You will need to add these secrets in GitHub (Settings > Secrets and variables > Actions)
           service_id: ${{ secrets.RENDER_SERVICE_ID_BACKEND }}
           api_key: ${{ secrets.RENDER_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           clear_cache: false
-          wait_deploy: true # Wait for the deployment to finish
-          github_deployment: true # Creates the native GitHub Deployment status
-          deployment_environment: production # Shows up as "production" in GitHub
+          wait_deploy: true
+          github_deployment: true
+          deployment_environment: production
 
   deploy-ai-engine:
     name: Deploy AI Engine
-    needs: deploy-backend
+    needs: [changes, deploy-backend]
+    # Only run if AI files changed, AND wait for backend to finish (if it was triggered)
+    if: ${{ always() && needs.changes.outputs.ai_engine == 'true' && (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       deployments: write
