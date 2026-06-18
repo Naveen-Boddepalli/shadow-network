@@ -35,6 +35,7 @@
 
 ---
 
+<a id="about-the-project"></a>
 ## 🎯 About the Project
 
 Students face three critical problems:
@@ -47,6 +48,7 @@ Students face three critical problems:
 
 ---
 
+<a id="features"></a>
 ## ✨ Features
 
 ### 📁 Decentralized File Storage (Phase 1)
@@ -90,6 +92,7 @@ Students face three critical problems:
 
 ---
 
+<a id="architecture"></a>
 ## 🏗 Architecture
 
 ```
@@ -122,6 +125,7 @@ Students face three critical problems:
 
 ---
 
+<a id="tech-stack"></a>
 ## 🛠 Tech Stack
 
 | Layer | Technology | Purpose |
@@ -143,8 +147,10 @@ Students face three critical problems:
 
 ---
 
+<a id="getting-started"></a>
 ## 🚀 Getting Started
 
+<a id="prerequisites"></a>
 ### Prerequisites
 
 Make sure you have these installed:
@@ -156,6 +162,7 @@ mongod --version  # MongoDB 6+
 ipfs --version    # Kubo 0.24+ (optional for local dev)
 ```
 
+<a id="installation"></a>
 ### Installation
 
 **1. Clone the repository**
@@ -184,6 +191,7 @@ cd ../frontend
 npm install
 ```
 
+<a id="running-locally"></a>
 ### Running Locally
 
 You need **5 terminals** running simultaneously:
@@ -244,6 +252,7 @@ Expected response:
 
 ---
 
+<a id="api-reference"></a>
 ## 📡 API Reference
 
 ### Health Check
@@ -344,6 +353,7 @@ curl -X POST http://localhost:5000/api/v1/notes/NOTE_ID/ask \
 
 ---
 
+<a id="deployment"></a>
 ## ☁️ Deployment
 
 The project deploys to three free-tier platforms:
@@ -378,6 +388,7 @@ git push
 
 ---
 
+<a id="environment-variables"></a>
 ## 🔐 Environment Variables
 
 ### Backend (`backend/.env`)
@@ -417,6 +428,7 @@ REACT_APP_P2P_MODE=false
 
 ---
 
+<a id="roadmap"></a>
 ## 🗺 Roadmap
 
 - [x] Phase 1 — IPFS decentralized file storage
@@ -435,6 +447,7 @@ REACT_APP_P2P_MODE=false
 
 ---
 
+<a id="contributing"></a>
 ## 🤝 Contributing
 
 Contributions are welcome!
