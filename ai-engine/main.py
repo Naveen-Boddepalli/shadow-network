@@ -138,19 +138,27 @@ def root():
 
 @app.get("/health")
 def health():
-    """Returns status of all AI models and the FAISS index."""
+    """Returns status of all AI models and the MongoDB vector index."""
     import importlib
     sum_mod = importlib.import_module("summarizer")
     qa_mod  = importlib.import_module("qa")
 
-    stats = get_index_stats()
+    # Try to get real stats — this also validates MongoDB connectivity
+    try:
+        stats = get_index_stats()
+        mongo_status = "connected"
+    except Exception as e:
+        stats = {"error": str(e)}
+        mongo_status = "error"
+
     return {
-        "status": "ok",
+        "status": "ok" if mongo_status == "connected" else "degraded",
         "models": {
-            "summarizer":       "loaded" if sum_mod._summarizer  is not None else "not_loaded",
-            "qa":               "loaded" if qa_mod._qa_pipeline  is not None else "not_loaded",
-            "embeddings":       "loaded",
+            "summarizer":  "loaded" if sum_mod._summarizer is not None else "not_loaded",
+            "qa":          "loaded" if qa_mod._qa_pipeline is not None else "not_loaded",
+            "embeddings":  "loaded",
         },
+        "mongodb": mongo_status,
         "vector_search": stats,
         "ipfs_gateway": IPFS_GATEWAY,
     }
@@ -178,8 +186,16 @@ async def ask_question(req: AskRequest):
 
 @app.post("/embed", response_model=EmbedResponse)
 async def embed_document(req: EmbedRequest):
+    # Step 1: Fetch text from IPFS
     text = await get_text_from_cid(req.cid, req.mime_type)
-    result = add_document(note_id=req.note_id, text=text)
+    # Step 2: Embed + upsert into MongoDB
+    try:
+        result = add_document(note_id=req.note_id, text=text)
+    except RuntimeError as e:
+        # e.g. MONGO_URI not set, Atlas IP blocked, index not found
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
     return EmbedResponse(note_id=req.note_id, **result)
 
 
