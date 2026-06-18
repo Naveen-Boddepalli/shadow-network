@@ -15,9 +15,9 @@
     "express-rate-limit": "^8.5.2",
     "express-validator": "^7.0.1",
     "jsonwebtoken": "^9.0.2",
-    "kubo-rpc-client": "^3.0.1",
+    "kubo-rpc-client": "^7.1.0",
     "mongoose": "^8.0.3",
-    "multer": "^1.4.5-lts.1"
+    "multer": "^2.2.0"
   },
   "devDependencies": {
     "jest": "^30.4.2",
