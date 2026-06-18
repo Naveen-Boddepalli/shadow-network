@@ -72,7 +72,7 @@ Students face three critical problems:
 - Search by **meaning**, not just keywords
 - Query `"laws of motion"` → finds notes about Newton, F=ma, dynamics, kinematics
 - Powered by `sentence-transformers/all-MiniLM-L6-v2` (384-dimensional vectors)
-- **FAISS** nearest-neighbour index for millisecond-speed search
+- **MongoDB Atlas** for persistent vector search storage, preventing data loss on restarts
 - Every uploaded document is auto-indexed in the background
 
 ### 🌐 P2P Offline Mesh (Phase 5)
@@ -81,6 +81,12 @@ Students face three critical problems:
 - Works completely **offline** — no internet, no server, no Render
 - Peer discovery via **mDNS** — classmates appear automatically
 - Transfer files over **WebRTC DataChannels** (same tech as video calls)
+
+### 🔒 Security & Hardening
+- **JWT-based authentication** to protect sensitive endpoints (upload, delete, AI).
+- Strict **CORS allowlisting** to prevent unauthorized frontend access.
+- Comprehensive input validation and sanitization via **express-validator**.
+- Data persistence guaranteed via automatic **IPFS pinning** (`ipfs.pin.add`).
 
 ---
 
@@ -386,6 +392,9 @@ PINATA_SECRET_KEY=your_pinata_secret_key
 PINATA_GATEWAY=https://gateway.pinata.cloud
 AI_ENGINE_URL=http://localhost:8000
 FRONTEND_URL=http://localhost:3000
+JWT_SECRET=change_me_to_a_long_random_string_in_production
+API_SECRET=change_me_to_a_secure_api_secret_in_production
+ALLOWED_ORIGINS=http://localhost:3000,https://your-frontend.vercel.app
 ```
 
 ### AI Engine (`ai-engine/.env`)
@@ -396,6 +405,8 @@ EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 SUMMARY_MAX_LENGTH=200
 SUMMARY_MIN_LENGTH=50
 IPFS_GATEWAY=https://gateway.pinata.cloud
+MONGO_URI=mongodb+srv://<user>:<password>@shadow-network.xxxxx.mongodb.net/?retryWrites=true&w=majority
+MONGO_DB_NAME=shadow-network
 ```
 
 ### Frontend (`frontend/.env`)
@@ -411,11 +422,11 @@ REACT_APP_P2P_MODE=false
 - [x] Phase 1 — IPFS decentralized file storage
 - [x] Phase 2 — MongoDB metadata + keyword search
 - [x] Phase 3 — AI summarization + Q&A
-- [x] Phase 4 — Semantic vector search (FAISS)
+- [x] Phase 4 — Semantic vector search (FAISS / MongoDB)
 - [x] Phase 5 — P2P browser mesh (Helia + libp2p)
 - [x] Full cloud deployment (Vercel + Render + Atlas + Pinata)
-- [ ] JWT Authentication (login/register)
-- [ ] Persistent FAISS index (Render Disk or Pinecone)
+- [x] JWT Authentication (API Key based)
+- [x] Persistent Vector Store (MongoDB Atlas)
 - [ ] Collections / Folders for organizing notes
 - [ ] PWA support (offline caching + Add to Home Screen)
 - [ ] OCR for scanned PDFs (pytesseract)
