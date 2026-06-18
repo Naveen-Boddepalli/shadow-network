@@ -194,7 +194,7 @@ async def embed_document(req: EmbedRequest):
         text = await get_text_from_cid(req.cid, req.mime_type)
         # Step 2: Embed + upsert into MongoDB
         result = add_document(note_id=req.note_id, text=text)
-        return EmbedResponse(note_id=req.note_id, **result)
+        return EmbedResponse(**result)
     except HTTPException:
         raise  # re-raise 404/422/503 from helpers as-is
     except RuntimeError as e:
