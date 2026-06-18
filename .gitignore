@@ -19,6 +19,7 @@ frontend/.env.local
 
 # Build outputs
 frontend/build/
+frontend/dist/
 frontend/.vercel/
 
 # FAISS runtime data
