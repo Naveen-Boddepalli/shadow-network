@@ -77,7 +77,6 @@ class EmbedRequest(BaseModel):
 class EmbedResponse(BaseModel):
     note_id: str
     indexed: bool
-    faiss_position: int | None = None
     reason: str | None = None
 
 class SemanticSearchRequest(BaseModel):
