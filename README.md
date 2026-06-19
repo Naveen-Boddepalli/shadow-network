@@ -475,8 +475,6 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 <div align="center">
 
-Built with ❤️ for students who deserve better access to knowledge.
-
 **[⬆ Back to top](#-the-shadow-network)**
 
 </div>
