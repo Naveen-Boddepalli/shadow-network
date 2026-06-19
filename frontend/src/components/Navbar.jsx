@@ -1,10 +1,18 @@
 // src/components/Navbar.jsx
 import React from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import { useP2P } from '../context/P2PContext';
+import { useAuth } from '../context/AuthContext';
 
 const Navbar = () => {
   const { p2pEnabled, peers, initialized } = useP2P();
+  const { isAuthenticated, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/');
+  };
 
   return (
     <nav style={{
@@ -45,23 +53,37 @@ const Navbar = () => {
         ))}
       </div>
 
-      {/* P2P status pill */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        background: 'rgba(255,255,255,0.07)',
-        padding: '4px 12px', borderRadius: 20,
-      }}>
-        <span style={{
-          width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-          background: p2pEnabled && initialized ? '#10b981'
-                    : p2pEnabled               ? '#f59e0b'
-                    :                            '#6b7280',
-        }} />
-        <span style={{ fontSize: 12, color: '#c7d2fe' }}>
-          {p2pEnabled
-            ? initialized ? `P2P · ${peers} peer${peers !== 1 ? 's' : ''}` : 'P2P connecting…'
-            : 'Server mode'}
-        </span>
+      {/* Right side: P2P + Auth */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+        {/* P2P status pill */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(255,255,255,0.07)',
+          padding: '4px 12px', borderRadius: 20,
+        }}>
+          <span style={{
+            width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+            background: p2pEnabled && initialized ? '#10b981'
+                      : p2pEnabled               ? '#f59e0b'
+                      :                            '#6b7280',
+          }} />
+          <span style={{ fontSize: 12, color: '#c7d2fe' }}>
+            {p2pEnabled
+              ? initialized ? `P2P · ${peers} peer${peers !== 1 ? 's' : ''}` : 'P2P connecting…'
+              : 'Server mode'}
+          </span>
+        </div>
+
+        {/* Auth Button */}
+        {isAuthenticated ? (
+          <button onClick={handleLogout} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.2)', color: '#c7d2fe', padding: '4px 12px', borderRadius: 6, cursor: 'pointer', fontSize: 13 }}>
+            Logout
+          </button>
+        ) : (
+          <button onClick={() => navigate('/login')} style={{ background: '#4f46e5', border: 'none', color: '#fff', padding: '5px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 500 }}>
+            Login
+          </button>
+        )}
       </div>
     </nav>
   );

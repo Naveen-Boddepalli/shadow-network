@@ -11,6 +11,15 @@ const api = axios.create({
   timeout: 120_000,   // 2 min — AI endpoints can be slow on first model load
 });
 
+// ── Interceptor: attach token ──────────────────────────────────
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('shadow_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 // ── Interceptor: normalize errors ──────────────────────────────
 api.interceptors.response.use(
   (res) => res.data,
@@ -23,6 +32,10 @@ api.interceptors.response.use(
     return Promise.reject(new Error(message));
   }
 );
+
+// ── Auth ───────────────────────────────────────────────────────
+
+export const login = (secret) => api.post('/auth/token', { secret });
 
 // ── Files (Phase 1) ────────────────────────────────────────────
 
