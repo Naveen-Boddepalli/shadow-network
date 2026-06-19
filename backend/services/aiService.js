@@ -39,7 +39,15 @@ const callAIEngine = (path, body, method = 'POST') => {
             resolve(parsed);
           }
         } catch {
-          reject(new Error('AI engine returned invalid JSON'));
+          // Render's free tier returns an HTML page when the service is asleep/down
+          if (data.includes('<!DOCTYPE') || data.includes('<html')) {
+            reject(new Error(
+              `AI engine is not responding (HTTP ${res.statusCode}). ` +
+              'It may be asleep on Render free tier — wait ~30s and retry.'
+            ));
+          } else {
+            reject(new Error(`AI engine returned invalid response (HTTP ${res.statusCode})`));
+          }
         }
       });
     });
