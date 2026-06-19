@@ -17,7 +17,7 @@ export const P2PProvider = ({ children }) => {
     error: null,
   });
 
-  const p2pEnabled = process.env.REACT_APP_P2P_MODE === 'true';
+  const p2pEnabled = import.meta.env.VITE_P2P_MODE === 'true';
 
   // Poll peer count every 5 seconds when P2P is active
   useEffect(() => {
