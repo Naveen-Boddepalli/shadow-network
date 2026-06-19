@@ -20,7 +20,7 @@ const PORT = process.env.PORT || 5000;
 // No wildcard pattern-matching; unknown origins are blocked.
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
   .split(',')
-  .map((s) => s.trim())
+  .map((s) => s.trim().replace(/\/$/, ''))
   .filter(Boolean);
 
 app.use(cors({
