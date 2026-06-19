@@ -31,15 +31,28 @@ const callAIEngine = (path, body, method = 'POST') => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
+        // ── Handle known HTTP error codes first ──────────────────
+        if (res.statusCode === 429) {
+          return reject(new Error(
+            'AI engine rate limit reached (HTTP 429). Wait a moment and try again.'
+          ));
+        }
+        if (res.statusCode === 503 || res.statusCode === 502) {
+          return reject(new Error(
+            `AI engine is starting up (HTTP ${res.statusCode}). ` +
+            'Render free tier sleeps after inactivity — wait ~30s and retry.'
+          ));
+        }
+
+        // ── Try to parse JSON ────────────────────────────────────
         try {
           const parsed = JSON.parse(data);
           if (res.statusCode >= 400) {
-            reject(new Error(parsed.detail || `AI engine error ${res.statusCode}`));
+            reject(new Error(parsed.detail || `AI engine error (HTTP ${res.statusCode})`));
           } else {
             resolve(parsed);
           }
         } catch {
-          // Render's free tier returns an HTML page when the service is asleep/down
           if (data.includes('<!DOCTYPE') || data.includes('<html')) {
             reject(new Error(
               `AI engine is not responding (HTTP ${res.statusCode}). ` +
