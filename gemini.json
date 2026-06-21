@@ -1,0 +1,3 @@
+{
+  "instruction": "Before performing any task or analysis on this codebase, you must first read memory.md located in the project root. This file serves as the single source of truth for the project status, system architecture, database models, security implementations, environment configurations, and local development. Whenever you make architectural changes, add new routes, modify database schemas, introduce new dependencies, or update environment configurations, you must immediately update memory.md to reflect those changes."
+}
