@@ -1,4 +1,3 @@
-// src/App.jsx
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { P2PProvider } from './context/P2PContext';
@@ -44,7 +43,7 @@ const App = () => (
             </Routes>
           </main>
           <footer style={{ textAlign: 'center', padding: '16px', fontSize: 12, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
-            Shadow Network · Decentralized Academic Sharing · Phases 1–5
+            Shadow Network · Decentralized Academic Sharing
           </footer>
         </div>
       </P2PProvider>

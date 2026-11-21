@@ -1,4 +1,3 @@
-// src/components/Navbar.jsx
 import React from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useP2P } from '../context/P2PContext';

@@ -20,7 +20,7 @@ const Login = () => {
     setError(null);
 
     const result = await login(secret);
-    
+
     if (result.success) {
       navigate(from, { replace: true });
     } else {
@@ -34,20 +34,22 @@ const Login = () => {
       <h2 style={{ marginBottom: 24, textAlign: 'center' }}>Network Login</h2>
       <div className="card">
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {error && <div className="error-box" style={{ background: '#fee2e2', color: '#991b1b', padding: 12, borderRadius: 6, fontSize: 14 }}>{error}</div>}
-          
+          {error && <div className="alert alert-error" style={{ marginBottom: 0 }}>{error}</div>}
+
           <div className="form-group">
-            <label>API Secret</label>
+            <label className="form-label" htmlFor="secret">API Secret</label>
             <input
+              id="secret"
               type="password"
-              className="input-field"
+              className="form-input"
+              autoComplete="current-password"
               value={secret}
               onChange={(e) => setSecret(e.target.value)}
               placeholder="Enter the shared secret"
               autoFocus
             />
           </div>
-          
+
           <button type="submit" className="btn btn-primary" disabled={loading} style={{ marginTop: 8 }}>
             {loading ? 'Authenticating...' : 'Connect to Network'}
           </button>
