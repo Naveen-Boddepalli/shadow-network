@@ -185,7 +185,40 @@ body {
 .truncate     { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .w-full       { width: 100%; }
 
+/* ── Navbar ──────────────────────────────────────────────────── */
+/* Grid, not space-between: the links sit in a centered auto column, so the
+   logo or the P2P pill changing width (e.g. "9 peers" -> "10 peers") can't
+   push them sideways. */
+.navbar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;   /* side columns never shrink below their content */
+  grid-template-areas: "brand links side";
+  align-items: center; column-gap: 16px;
+  min-height: 56px; padding: 0 24px; flex-shrink: 0;
+  background: #1e1b4b; border-bottom: 1px solid #312e81;
+}
+.navbar-brand { grid-area: brand; min-width: 0; }   /* stretch to the column so the name can truncate */
+.navbar-links { grid-area: links; display: flex; align-items: center; gap: 4px; }
+.navbar-side  { grid-area: side; justify-self: end; display: flex; align-items: center; gap: 16px; }
+.navbar-pill-text { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
 /* ── Responsive ──────────────────────────────────────────────── */
+/* Below ~1000px the three groups don't fit on one row. */
+@media (max-width: 1000px) {
+  /* Two rows: brand + status on top, links below (scrolls sideways if needed). */
+  .navbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "brand side" "links links";
+    padding: 8px 16px 0; row-gap: 4px;
+  }
+  .navbar-links { overflow-x: auto; scrollbar-width: none; padding-bottom: 6px; margin: 0 -16px; padding-left: 12px; padding-right: 12px; }
+  .navbar-links::-webkit-scrollbar { display: none; }
+  .navbar-side { gap: 10px; }
+}
+@media (max-width: 480px) {
+  /* Links use inline padding, hence !important. */
+  .navbar-links a { padding: 6px 10px !important; }
+}
 @media (max-width: 640px) {
   .page-wrap  { padding: 16px; }
   .form-row   { grid-template-columns: 1fr; }
