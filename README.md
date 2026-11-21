@@ -44,7 +44,7 @@ Students face three critical problems:
 - 📶 **Poor connectivity** in campus labs and libraries breaks cloud-dependent tools
 - 💾 **Centralized failure** — when Google Drive or Dropbox goes down, notes disappear
 
-**The Shadow Network** solves all three by combining IPFS decentralized storage with an AI layer that lets students summarize, search, and question any document — and an optional P2P mode that works entirely offline on the same campus WiFi.
+**The Shadow Network** stores documents on IPFS, adds an AI layer that lets students summarize, search and question them, and offers an optional browser-to-browser P2P mode.
 
 ---
 
@@ -52,43 +52,42 @@ Students face three critical problems:
 ## ✨ Features
 
 ### 📁 Decentralized File Storage (Phase 1)
-- Upload PDFs, DOCX, TXT, and images directly to **IPFS** via Pinata
-- Every file gets a unique **CID** (Content Identifier) — a cryptographic hash
-- Files are **immutable and permanent** — no one can delete or alter them
-- Download any file with just its CID — no account needed
+- Upload PDFs, DOCX, TXT, images and ZIPs (up to 50 MB) to **IPFS** via Pinata, or a local Kubo node in development
+- Every file gets a **CID** (Content Identifier) derived from its contents, so a file can't be altered without its CID changing
+- Uploads are pinned so they aren't garbage-collected
+- Anyone can download a file by its CID, no account needed
 
 ### 🔍 Metadata & Keyword Search (Phase 2)
 - Attach **title, subject, and tags** to every uploaded document
 - **Full-text search** across title, subject, and tags simultaneously
-- MongoDB `$text` index for fast indexed search + regex fallback for partial words
+- MongoDB `$text` index for ranked whole-word matches, plus a substring match for partial words
 - Filter notes by subject, paginate results
 
 ### 🤖 AI Layer — Summarize & Q&A (Phase 3)
-- **One-click AI summary** of any document using BART (distilled)
+- **One-click summary** of PDF, DOCX and TXT documents using DistilBART
 - **Ask questions** about a document in natural language
-- Answers are **extractive** — pulled directly from the document text, no hallucination
+- Answers are **extractive**: the model quotes a passage from the document rather than generating text
 - Confidence score on every answer
-- Summaries are **cached** in MongoDB — generated once, served instantly after
+- Summaries are **cached** in MongoDB, so each document is summarized once
 
 ### ⚡ Semantic Search (Phase 4)
 - Search by **meaning**, not just keywords
 - Query `"laws of motion"` → finds notes about Newton, F=ma, dynamics, kinematics
 - Powered by `sentence-transformers/all-MiniLM-L6-v2` (384-dimensional vectors)
-- **MongoDB Atlas** for persistent vector search storage, preventing data loss on restarts
-- Every uploaded document is auto-indexed in the background
+- Vectors are stored in **MongoDB Atlas** and queried with `$vectorSearch`, so they survive restarts on Render's free tier
+- Text documents are indexed in the background after upload; a failed index can be retried from the note page
 
 ### 🌐 P2P Offline Mesh (Phase 5)
-- Enable **browser-native IPFS** using Helia — no installation needed
-- Share files directly between students on the **same campus WiFi**
-- Works completely **offline** — no internet, no server, no Render
-- Peer discovery via **mDNS** — classmates appear automatically
-- Transfer files over **WebRTC DataChannels** (same tech as video calls)
+- Runs a **browser-native IPFS node** (Helia), no installation needed
+- Browsers connect to each other over **WebRTC**, using a libp2p relay to find and reach peers
+- Fetch a file directly from a peer by its CID, without going through the backend
 
 ### 🔒 Security & Hardening
-- **JWT-based authentication** to protect sensitive endpoints (upload, delete, AI).
-- Strict **CORS allowlisting** to prevent unauthorized frontend access.
-- Comprehensive input validation and sanitization via **express-validator**.
-- Data persistence guaranteed via automatic **IPFS pinning** (`ipfs.pin.add`).
+- **JWT authentication**: a shared `API_SECRET` is exchanged for a 24-hour token that protects upload, delete and AI endpoints
+- **CORS allowlist** of exact frontend origins
+- Input validation with **express-validator**
+- **Rate limiting** on login, upload and AI endpoints
+- Optional shared key (`AI_ENGINE_KEY`) so only the backend can call the AI engine
 
 ---
 
@@ -110,15 +109,15 @@ Students face three critical problems:
        ▼                  ▼                  ▼
 ┌─────────────┐  ┌───────────────┐  ┌───────────────────┐
 │   Pinata    │  │ MongoDB Atlas │  │  Python AI Engine  │
-│ (IPFS Cloud)│  │  (Metadata)   │  │  FastAPI + FAISS   │
-│             │  │               │  │  BART · RoBERTa    │
+│ (IPFS Cloud)│  │  (Metadata)   │  │  FastAPI           │
+│             │  │               │  │  DistilBART·MiniLM │
 │ Files + CIDs│  │ Notes + Search│  │  Embeddings + Q&A  │
 └─────────────┘  └───────────────┘  └───────────────────┘
 
 ── P2P Mode (optional) ──────────────────────────────────
 ┌──────────────┐   WebRTC    ┌──────────────┐
 │ Student A    │ ←─────────► │ Student B    │
-│ Helia Node   │   same LAN  │ Helia Node   │
+│ Helia Node   │  via relay  │ Helia Node   │
 │ (browser)    │             │ (browser)    │
 └──────────────┘             └──────────────┘
 ```
@@ -130,7 +129,7 @@ Students face three critical problems:
 
 | Layer | Technology | Purpose |
 |---|---|---|
-| Frontend | React 18 + React Router v6 | UI, routing, pages |
+| Frontend | React 18 + Vite + React Router 7 | UI, routing, pages |
 | Styling | Plain CSS with CSS variables | No Tailwind/MUI dependency |
 | File Storage | Pinata (IPFS cloud) | Decentralized, permanent file storage |
 | Backend | Node.js + Express | REST API, business logic |
@@ -139,7 +138,7 @@ Students face three critical problems:
 | Summarization | distilbart-cnn-6-6 | Document summarization (BART family) |
 | Q&A | minilm-uncased-squad2 | Extractive question answering |
 | Embeddings | all-MiniLM-L6-v2 | 384-dim semantic vectors |
-| Vector Search | FAISS IndexFlatIP | Cosine similarity search |
+| Vector Search | MongoDB Atlas `$vectorSearch` | Cosine similarity search |
 | PDF Extract | pdfplumber | Pure Python, no C++ compilation |
 | P2P | Helia + libp2p + WebRTC | Browser-native IPFS mesh |
 | Frontend Deploy | Vercel | Free, auto-deploys on push |
@@ -156,7 +155,7 @@ Students face three critical problems:
 Make sure you have these installed:
 
 ```bash
-node --version    # v18 or higher
+node --version    # v20 or higher
 python3 --version # v3.11 or higher
 mongod --version  # MongoDB 6+
 ipfs --version    # Kubo 0.24+ (optional for local dev)
@@ -196,7 +195,7 @@ npm install
 
 You need **5 terminals** running simultaneously:
 
-**Terminal 1 — IPFS (optional with Pinata keys)**
+**Terminal 1 — IPFS (not needed if you set Pinata keys)**
 ```bash
 ipfs init        # First time only
 ipfs daemon
@@ -219,7 +218,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```bash
 cd backend
 cp .env.example .env
-# Edit .env with your MongoDB URI and Pinata keys
+# Edit .env: MONGO_URI, JWT_SECRET, API_SECRET (and Pinata keys, or run ipfs daemon)
 npm run dev
 ```
 
@@ -227,8 +226,7 @@ npm run dev
 ```bash
 cd frontend
 cp .env.example .env
-# Edit .env: REACT_APP_API_URL=http://localhost:5000/api/v1
-npm start
+npm run dev
 # Opens http://localhost:3000
 ```
 
@@ -250,10 +248,25 @@ Expected response:
 }
 ```
 
+Semantic search also needs a one-time Atlas Vector Search index; see the comment at the top of [`ai-engine/embeddings.py`](ai-engine/embeddings.py).
+
+**Run the tests:**
+```bash
+cd backend && npm test
+cd ai-engine && pip install -r requirements-dev.txt && python -m pytest tests
+```
+
 ---
 
 <a id="api-reference"></a>
 ## 📡 API Reference
+
+Endpoints marked 🔒 need an `Authorization: Bearer <token>` header.
+
+### Auth
+```
+POST   /api/v1/auth/token          Body: { "secret": "<API_SECRET>" } → { "token", "expiresIn": "24h" }
+```
 
 ### Health Check
 ```
@@ -262,14 +275,14 @@ GET /api/v1/health
 
 ### File Operations
 ```
-POST   /api/v1/upload              Upload file + metadata
+POST   /api/v1/upload              🔒 Upload file + metadata
 GET    /api/v1/download/:cid       Download file by CID
 ```
 
 **Upload request (multipart/form-data):**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `file` | File | ✅ | PDF, DOCX, TXT, image (max 50MB) |
+| `file` | File | ✅ | PDF, DOC/DOCX, TXT, PNG/JPEG, ZIP (max 50 MB; AI features need PDF, DOCX or TXT) |
 | `title` | string | ✅ | Human-readable title |
 | `subject` | string | ✅ | Academic subject |
 | `tags` | string | ❌ | Comma-separated: `"exam,unit3"` |
@@ -296,17 +309,17 @@ GET    /api/v1/download/:cid       Download file by CID
 ```
 GET    /api/v1/notes               All notes (paginated)
 GET    /api/v1/notes/:id           Single note
-DELETE /api/v1/notes/:id           Delete note metadata
+DELETE /api/v1/notes/:id           🔒 Delete note metadata (the file stays on IPFS)
 GET    /api/v1/search?q=keyword    Keyword search
 GET    /api/v1/semantic-search?q=  Semantic/meaning-based search
 ```
 
 ### AI Features
 ```
-POST   /api/v1/notes/:id/summarize    Generate AI summary
-POST   /api/v1/notes/:id/ask          Ask a question (body: {question})
-DELETE /api/v1/notes/:id/summary      Clear cached summary
-POST   /api/v1/notes/:id/embed        Add to semantic search index
+POST   /api/v1/notes/:id/summarize    🔒 Generate AI summary
+POST   /api/v1/notes/:id/ask          🔒 Ask a question (body: {question})
+DELETE /api/v1/notes/:id/summary      🔒 Clear cached summary
+POST   /api/v1/notes/:id/embed        🔒 Add to semantic search index
 ```
 
 **Ask question request:**
@@ -329,8 +342,14 @@ POST   /api/v1/notes/:id/embed        Add to semantic search index
 
 ### Example curl Commands
 ```bash
+# Get a token
+TOKEN=$(curl -s -X POST http://localhost:5000/api/v1/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"secret": "your_api_secret"}' | jq -r .token)
+
 # Upload a file
 curl -X POST http://localhost:5000/api/v1/upload \
+  -H "Authorization: Bearer $TOKEN" \
   -F "file=@notes.pdf" \
   -F "title=Newton Laws" \
   -F "subject=Physics" \
@@ -343,10 +362,12 @@ curl "http://localhost:5000/api/v1/search?q=thermodynamics"
 curl "http://localhost:5000/api/v1/semantic-search?q=laws+of+motion"
 
 # Summarize
-curl -X POST http://localhost:5000/api/v1/notes/NOTE_ID/summarize
+curl -X POST http://localhost:5000/api/v1/notes/NOTE_ID/summarize \
+  -H "Authorization: Bearer $TOKEN"
 
 # Ask a question
 curl -X POST http://localhost:5000/api/v1/notes/NOTE_ID/ask \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"question": "What is entropy?"}'
 ```
@@ -360,31 +381,16 @@ The project deploys to three free-tier platforms:
 
 | Service | Platform | Auto-deploy |
 |---|---|---|
-| Frontend | Vercel | ✅ On every `git push` |
-| Backend | Render | ✅ On every `git push` |
-| AI Engine | Render | ✅ On every `git push` |
+| Frontend | Vercel | ✅ On every push to `main` |
+| Backend | Render | ✅ GitHub Action, when `backend/` changes |
+| AI Engine | Render | ✅ GitHub Action, when `ai-engine/` changes |
 | Database | MongoDB Atlas | — (managed) |
 | Files | Pinata IPFS | — (managed) |
 
 See [DEPLOY.md](DEPLOY.md) for the complete step-by-step deployment guide.
 
-**Quick deploy:**
-```bash
-git add .
-git commit -m "your changes"
-git push origin main
-# Render and Vercel auto-deploy within 2-3 minutes
-```
-
 ### Enable P2P Mode
-```bash
-# In frontend/.env
-REACT_APP_P2P_MODE=true
-
-git add frontend/.env
-git commit -m "Enable P2P mode"
-git push
-```
+Set `VITE_P2P_MODE=true` in `frontend/.env` for local development, or in the Vercel project's environment variables for production (`frontend/.env.production` sets it for production builds).
 
 ---
 
@@ -402,9 +408,9 @@ PINATA_API_KEY=your_pinata_api_key
 PINATA_SECRET_KEY=your_pinata_secret_key
 PINATA_GATEWAY=https://gateway.pinata.cloud
 AI_ENGINE_URL=http://localhost:8000
-FRONTEND_URL=http://localhost:3000
-JWT_SECRET=change_me_to_a_long_random_string_in_production
-API_SECRET=change_me_to_a_secure_api_secret_in_production
+AI_ENGINE_KEY=                 # optional; must match the AI engine's
+JWT_SECRET=change_me           # long random string
+API_SECRET=change_me           # shared login secret
 ALLOWED_ORIGINS=http://localhost:3000,https://your-frontend.vercel.app
 ```
 
@@ -416,14 +422,15 @@ EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
 SUMMARY_MAX_LENGTH=200
 SUMMARY_MIN_LENGTH=50
 IPFS_GATEWAY=https://gateway.pinata.cloud
-MONGO_URI=mongodb+srv://<user>:<password>@shadow-network.xxxxx.mongodb.net/?retryWrites=true&w=majority
+MONGO_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/?retryWrites=true&w=majority
 MONGO_DB_NAME=shadow-network
+AI_ENGINE_KEY=                 # optional; must match the backend's
 ```
 
 ### Frontend (`frontend/.env`)
 ```env
-REACT_APP_API_URL=http://localhost:5000/api/v1
-REACT_APP_P2P_MODE=false
+VITE_API_URL=http://localhost:5000/api/v1
+VITE_P2P_MODE=false
 ```
 
 ---
@@ -434,7 +441,7 @@ REACT_APP_P2P_MODE=false
 - [x] Phase 1 — IPFS decentralized file storage
 - [x] Phase 2 — MongoDB metadata + keyword search
 - [x] Phase 3 — AI summarization + Q&A
-- [x] Phase 4 — Semantic vector search (FAISS / MongoDB)
+- [x] Phase 4 — Semantic vector search (MongoDB Atlas)
 - [x] Phase 5 — P2P browser mesh (Helia + libp2p)
 - [x] Full cloud deployment (Vercel + Render + Atlas + Pinata)
 - [x] JWT Authentication (API Key based)

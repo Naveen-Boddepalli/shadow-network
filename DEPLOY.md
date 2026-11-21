@@ -14,7 +14,7 @@ File Storage        Pinata (IPFS)    Free    gateway.pinata.cloud
 
 ⚠️  Free tier limitations:
   - Render services SLEEP after 15 min inactivity → first request takes ~30s to wake
-  - Render free = 512MB RAM → AI models load slowly (BART ~1.5GB, use lighter models)
+  - Render free = 512MB RAM → use the distilled models listed in Step 4A
   - Pinata free = 1GB storage, 100 pins
   - Atlas free = 512MB database storage
 
@@ -51,7 +51,18 @@ STEP 2 — MONGODB ATLAS (you already have an account)
    Replace <password> and add database name:
    mongodb+srv://username:yourpassword@cluster0.xxxxx.mongodb.net/shadow-network?retryWrites=true&w=majority
 
-   SAVE THIS — you'll need it in Step 3.
+   SAVE THIS — you'll need it in Step 4.
+
+7. Create the vector search index (needed for semantic search):
+   Database → Browse Collections → shadow-network → embeddings
+   (create the collection if it doesn't exist yet) → Search Indexes →
+   Create Search Index → Atlas Vector Search → JSON editor:
+
+   Index name: vector_index
+   {
+     "fields": [{ "type": "vector", "path": "embedding",
+                  "numDimensions": 384, "similarity": "cosine" }]
+   }
 
 ==========================================================================
 STEP 3 — PINATA (free cloud IPFS)
@@ -85,23 +96,24 @@ STEP 4 — RENDER (Backend + AI Engine)
    Instance Type:    Free
 
 4. Environment Variables → Add these one by one:
-   SUMMARIZATION_MODEL   = facebook/bart-large-cnn
-   QA_MODEL              = deepset/roberta-base-squad2
+   SUMMARIZATION_MODEL   = sshleifer/distilbart-cnn-6-6
+   QA_MODEL              = deepset/minilm-uncased-squad2
    EMBEDDING_MODEL       = sentence-transformers/all-MiniLM-L6-v2
    SUMMARY_MAX_LENGTH    = 200
    SUMMARY_MIN_LENGTH    = 50
    IPFS_GATEWAY          = https://gateway.pinata.cloud
+   MONGO_URI             = mongodb+srv://...  (from Step 2)
+   MONGO_DB_NAME         = shadow-network
+   AI_ENGINE_KEY         = (a long random string; optional but recommended —
+                            without it anyone can call the engine's endpoints)
 
 5. Click "Create Web Service"
 6. Wait for deploy → copy the URL shown at top:
    https://shadow-network-ai-xxxx.onrender.com
    SAVE THIS URL.
 
-⚠️  NOTE on RAM: BART + RoBERTa together need ~2GB RAM.
-    Free tier has 512MB. To make it work on free tier, use lighter models:
-    SUMMARIZATION_MODEL = sshleifer/distilbart-cnn-12-6    (lighter BART)
-    QA_MODEL            = deepset/minilm-uncased-squad2     (lighter RoBERTa)
-    These are 4x smaller, still good quality.
+⚠️  NOTE on RAM: the full-size facebook/bart-large-cnn + deepset/roberta-base-squad2
+    need ~2GB RAM and won't fit the free tier's 512MB. Use them only on a paid instance.
 
 ──── 4B. Deploy the Backend ────────────────────────────────────────────
 
@@ -123,7 +135,13 @@ STEP 4 — RENDER (Backend + AI Engine)
    PINATA_SECRET_KEY = (from Step 3)
    PINATA_GATEWAY    = https://gateway.pinata.cloud
    AI_ENGINE_URL     = https://shadow-network-ai-xxxx.onrender.com  (from 4A)
-   FRONTEND_URL      = https://shadow-network.vercel.app  (update after Step 5)
+   AI_ENGINE_KEY     = (same value as the AI engine's, if you set one)
+   JWT_SECRET        = (long random string)
+   API_SECRET        = (the shared secret users type on the Login page)
+   ALLOWED_ORIGINS   = https://shadow-network.vercel.app  (update after Step 5)
+
+   Generate random strings with:
+   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 
 5. Click "Create Web Service"
 6. Wait for deploy → copy the URL:
@@ -137,14 +155,14 @@ STEP 5 — VERCEL (Frontend)
 1. Go to: vercel.com → New Project
 2. Import Git Repository → select "shadow-network"
 3. Configure Project:
-   Framework Preset:  Create React App
+   Framework Preset:  Vite
    Root Directory:    frontend        ← IMPORTANT: click "Edit" and set this
    Build Command:     npm run build
-   Output Directory:  build
+   Output Directory:  dist
 
-4. Environment Variables → Add:
-   REACT_APP_API_URL   = https://shadow-network-backend-xxxx.onrender.com/api/v1
-   REACT_APP_P2P_MODE  = false
+4. Environment Variables → Add (these override frontend/.env.production):
+   VITE_API_URL   = https://shadow-network-backend-xxxx.onrender.com/api/v1
+   VITE_P2P_MODE  = false
 
 5. Click Deploy
 6. Your app will be live at:
@@ -152,7 +170,8 @@ STEP 5 — VERCEL (Frontend)
    (or set a custom domain)
 
 7. Go back to Render → Backend service → Environment Variables
-   Update FRONTEND_URL = https://shadow-network-xxxx.vercel.app
+   Update ALLOWED_ORIGINS = https://shadow-network-xxxx.vercel.app
+   (comma-separate several origins; no trailing slash)
    Click "Save Changes" (triggers redeploy)
 
 ==========================================================================
@@ -200,4 +219,7 @@ git add .
 git commit -m "your change description"
 git push
 
-→ Render and Vercel auto-deploy on every push to main. That's it.
+→ Vercel deploys the frontend on every push to main. The GitHub Action in
+  .github/workflows/render-deployments.yml deploys the backend and AI engine
+  to Render when their folders change (needs the RENDER_API_KEY,
+  RENDER_SERVICE_ID_BACKEND and RENDER_SERVICE_ID_AI repository secrets).
