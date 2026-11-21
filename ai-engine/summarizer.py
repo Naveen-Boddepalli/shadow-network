@@ -1,125 +1,87 @@
-# ai-engine/summarizer.py
-# Summarizes text using facebook/bart-large-cnn (free, runs locally).
-# Model is downloaded once from HuggingFace and cached on disk.
+# Abstractive summarization with a distilled BART model (CNN/DailyMail fine-tune).
+# The model is downloaded from Hugging Face on first use and cached on disk.
 
 import os
-from transformers import pipeline
+
 from extractor import chunk_text
 
-# ── Model config ───────────────────────────────────────────────
-MODEL_NAME = os.getenv("SUMMARIZATION_MODEL", "facebook/bart-large-cnn")
-MAX_OUTPUT = int(os.getenv("SUMMARY_MAX_LENGTH", 200))
-MIN_OUTPUT = int(os.getenv("SUMMARY_MIN_LENGTH", 50))
+MODEL_NAME = os.getenv("SUMMARIZATION_MODEL", "sshleifer/distilbart-cnn-6-6")
+MAX_OUTPUT = int(os.getenv("SUMMARY_MAX_LENGTH", 200))  # tokens
+MIN_OUTPUT = int(os.getenv("SUMMARY_MIN_LENGTH", 50))   # tokens
 
-# ── Lazy load — model loads once, reused for all requests ──────
-# Loading a transformer model takes ~5 seconds, so we do it once at startup.
+# ~3000 characters stays under BART's 1024-token input limit for typical English.
+CHUNK_CHARS = 3000
+# Bound the work for very long documents; later chunks are skipped.
+MAX_CHUNKS = 30
+
 _summarizer = None
 
 
+def is_loaded() -> bool:
+    return _summarizer is not None
+
+
 def get_summarizer():
-    """
-    Returns the summarization pipeline, loading it on first call.
-    Uses lazy initialization so server starts fast.
-    """
     global _summarizer
     if _summarizer is None:
-        print(f"⏳ Loading summarization model: {MODEL_NAME} (first load may take a minute)...")
+        import torch
+        from transformers import pipeline
+
+        print(f"Loading summarization model {MODEL_NAME} (the first download can take a while)...")
         _summarizer = pipeline(
             "summarization",
             model=MODEL_NAME,
-            # Use GPU if available, otherwise CPU
-            device=0 if _cuda_available() else -1,
+            device=0 if torch.cuda.is_available() else -1,
         )
-        print("✅ Summarization model loaded")
+        print("Summarization model loaded")
     return _summarizer
 
 
 def summarize(text: str) -> dict:
     """
-    Summarizes the given text.
+    Short texts are summarized directly. Long texts are map-reduced: each chunk is
+    summarized, then the joined chunk summaries are summarized again until the
+    result fits in one chunk.
 
-    For short texts (< 1000 chars): summarize directly.
-    For long texts: chunk → summarize each chunk → combine → summarize again.
-
-    Returns:
-        {
-            "summary": str,
-            "word_count_original": int,
-            "word_count_summary": int,
-            "chunks_processed": int
-        }
+    Returns: { summary, word_count_original, word_count_summary, chunks_processed }
     """
-    summarizer = get_summarizer()
+    model = get_summarizer()
     original_word_count = len(text.split())
 
-    # ── Short text: direct summarization ──────────────────────
-    if len(text) <= 3000:
-        result = _summarize_chunk(summarizer, text)
-        return {
-            "summary": result,
-            "word_count_original": original_word_count,
-            "word_count_summary": len(result.split()),
-            "chunks_processed": 1,
-        }
+    chunks = chunk_text(text, max_chars=CHUNK_CHARS, overlap_paragraphs=0)[:MAX_CHUNKS] or [text]
+    chunks_processed = len(chunks)
 
-    # ── Long text: map-reduce summarization ───────────────────
-    # Step 1: Split into chunks
-    chunks = chunk_text(text, max_chars=3000)
-
-    # Step 2: Summarize each chunk individually
-    chunk_summaries = []
-    for i, chunk in enumerate(chunks):
-        print(f"  Summarizing chunk {i+1}/{len(chunks)}...")
-        chunk_summary = _summarize_chunk(summarizer, chunk)
-        chunk_summaries.append(chunk_summary)
-
-    # Step 3: Combine all chunk summaries into one text
-    combined = " ".join(chunk_summaries)
-
-    # Step 4: Final summarization of the combined summaries
-    if len(combined) > 3000:
-        # Still too long — do one more pass
-        final_summary = _summarize_chunk(summarizer, combined[:3000])
-    else:
-        final_summary = _summarize_chunk(summarizer, combined)
+    while len(chunks) > 1:
+        combined = " ".join(_summarize_chunk(model, c) for c in chunks)
+        next_chunks = chunk_text(combined, max_chars=CHUNK_CHARS, overlap_paragraphs=0) or [combined]
+        if len(next_chunks) >= len(chunks):
+            # Not shrinking (e.g. chunks too short to summarize); stop instead of looping.
+            next_chunks = [combined[:CHUNK_CHARS]]
+        chunks = next_chunks
+    summary = _summarize_chunk(model, chunks[0])
 
     return {
-        "summary": final_summary,
+        "summary": summary,
         "word_count_original": original_word_count,
-        "word_count_summary": len(final_summary.split()),
-        "chunks_processed": len(chunks),
+        "word_count_summary": len(summary.split()),
+        "chunks_processed": chunks_processed,
     }
 
 
-def _summarize_chunk(summarizer, text: str) -> str:
-    """
-    Summarize a single chunk of text.
-    Handles edge case where text is already shorter than min_length.
-    """
+def _summarize_chunk(model, text: str) -> str:
     word_count = len(text.split())
-
-    # If the text is already very short, don't try to summarize
     if word_count < 30:
-        return text
+        return text.strip()  # already shorter than any useful summary
 
-    # Adjust min/max dynamically to avoid model errors
+    # Keep the requested lengths sensible for short inputs.
     max_len = min(MAX_OUTPUT, max(30, word_count // 2))
-    min_len = min(MIN_OUTPUT, max_len - 10)
+    min_len = max(5, min(MIN_OUTPUT, max_len - 10))
 
-    result = summarizer(
+    result = model(
         text,
         max_length=max_len,
         min_length=min_len,
-        do_sample=False,        # Deterministic output
-        truncation=True,        # Truncate input if over model's token limit
+        do_sample=False,
+        truncation=True,
     )
-    return result[0]["summary_text"]
-
-
-def _cuda_available() -> bool:
-    """Check if a CUDA GPU is available for faster inference."""
-    try:
-        import torch
-        return torch.cuda.is_available()
-    except ImportError:
-        return False
+    return result[0]["summary_text"].strip()

@@ -1,122 +1,71 @@
-# ai-engine/qa.py
-# Answers questions about a document using deepset/roberta-base-squad2.
-# This is EXTRACTIVE Q&A: the model finds the answer span within the text.
-# It does NOT hallucinate — if the answer isn't in the doc, it says so.
+# Extractive question answering: the model selects a span of the document as the
+# answer rather than generating text, so it can only "say" what the document says.
 
 import os
-from transformers import pipeline
+
 from extractor import chunk_text
 
-# ── Model config ───────────────────────────────────────────────
-MODEL_NAME = os.getenv("QA_MODEL", "deepset/roberta-base-squad2")
+MODEL_NAME = os.getenv("QA_MODEL", "deepset/minilm-uncased-squad2")
 
-# Confidence threshold — answers below this score are flagged as uncertain
+# Answers scoring below this are returned but flagged as low confidence.
 CONFIDENCE_THRESHOLD = 0.15
+CHUNK_CHARS = 3000
 
-# ── Lazy load ──────────────────────────────────────────────────
+NO_ANSWER = "I couldn't find an answer to that question in this document."
+
 _qa_pipeline = None
 
 
+def is_loaded() -> bool:
+    return _qa_pipeline is not None
+
+
 def get_qa_pipeline():
-    """Returns the QA pipeline, loading it on first call."""
     global _qa_pipeline
     if _qa_pipeline is None:
-        print(f"⏳ Loading Q&A model: {MODEL_NAME}...")
+        import torch
+        from transformers import pipeline
+
+        print(f"Loading Q&A model {MODEL_NAME}...")
         _qa_pipeline = pipeline(
             "question-answering",
             model=MODEL_NAME,
-            device=0 if _cuda_available() else -1,
+            device=0 if torch.cuda.is_available() else -1,
         )
-        print("✅ Q&A model loaded")
+        print("Q&A model loaded")
     return _qa_pipeline
 
 
 def answer_question(question: str, context_text: str) -> dict:
     """
-    Answer a question given the document text as context.
+    Run the model over each chunk of the document and keep the best non-empty answer.
 
-    Strategy for long documents:
-    - Split text into overlapping chunks
-    - Run Q&A on each chunk
-    - Return the answer with the highest confidence score
-
-    Returns:
-        {
-            "answer": str,
-            "confidence": float,       # 0.0 to 1.0
-            "confident": bool,         # True if above threshold
-            "context_snippet": str,    # Surrounding text where answer was found
-            "chunks_searched": int
-        }
+    Returns: { answer, confidence (0–1), confident, chunks_searched }
     """
     qa = get_qa_pipeline()
+    chunks = chunk_text(context_text, max_chars=CHUNK_CHARS) or [context_text]
 
-    # ── Short context: single pass ─────────────────────────────
-    if len(context_text) <= 3000:
-        return _run_qa(qa, question, context_text, chunks_searched=1)
-
-    # ── Long context: search all chunks, pick best answer ──────
-    chunks = chunk_text(context_text, max_chars=3000)
-    best_result = None
-
+    best = None
     for chunk in chunks:
-        result = _run_qa_raw(qa, question, chunk)
-        if best_result is None or result["score"] > best_result["score"]:
-            best_result = result
+        result = qa(
+            question=question,
+            context=chunk,
+            max_answer_len=50,              # in tokens
+            handle_impossible_answer=True,  # empty answer when the chunk has none
+        )
+        # An empty "no answer" in one chunk must not beat a real answer in another.
+        if not result.get("answer", "").strip():
+            continue
+        if best is None or result["score"] > best["score"]:
+            best = result
 
-    return _format_result(best_result, chunks_searched=len(chunks))
+    if best is None or best["score"] < 0.01:
+        return {"answer": NO_ANSWER, "confidence": 0.0, "confident": False, "chunks_searched": len(chunks)}
 
-
-def _run_qa(qa, question: str, context: str, chunks_searched: int) -> dict:
-    """Run QA on a single context and return formatted result."""
-    raw = _run_qa_raw(qa, question, context)
-    result = _format_result(raw, chunks_searched=chunks_searched)
-    return result
-
-
-def _run_qa_raw(qa, question: str, context: str) -> dict:
-    """Run the pipeline and return raw output dict."""
-    return qa(
-        question=question,
-        context=context,
-        max_answer_len=150,    # Max chars in the extracted answer span
-        handle_impossible_answer=True,  # Returns "" if no answer found
-    )
-
-
-def _format_result(raw: dict, chunks_searched: int) -> dict:
-    """
-    Convert raw pipeline output into a clean API response.
-    Handles the case where the model found no answer (empty string).
-    """
-    answer = raw.get("answer", "").strip()
-    score = float(raw.get("score", 0.0))
-
-    # Model signals "no answer" by returning empty string or very low score
-    if not answer or score < 0.01:
-        return {
-            "answer": "I couldn't find a specific answer to that question in this document.",
-            "confidence": 0.0,
-            "confident": False,
-            "context_snippet": "",
-            "chunks_searched": chunks_searched,
-        }
-
-    # Extract a snippet of surrounding context (±200 chars around answer)
-    context_snippet = raw.get("context_snippet", "")
-
+    score = float(best["score"])
     return {
-        "answer": answer,
+        "answer": best["answer"].strip(),
         "confidence": round(score, 4),
         "confident": score >= CONFIDENCE_THRESHOLD,
-        "context_snippet": context_snippet,
-        "chunks_searched": chunks_searched,
+        "chunks_searched": len(chunks),
     }
-
-
-def _cuda_available() -> bool:
-    try:
-        import torch
-        return torch.cuda.is_available()
-    except ImportError:
-        return False
