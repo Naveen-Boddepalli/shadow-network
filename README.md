@@ -404,7 +404,7 @@ See [DEPLOY.md](DEPLOY.md) for the complete step-by-step deployment guide.
 2. In `frontend/.env`, set `VITE_P2P_MODE=true` and `VITE_P2P_RELAYS=<that multiaddr>`. For a LAN with no internet, also set `VITE_P2P_PUBLIC_NETWORK=false`.
 3. Open the **Peers** page. Other users on the same relay appear within about 10 seconds. Upload a file in **P2P only** mode and share its CID; peers fetch it with **Download from Peer by CID**.
 
-> A page served over `https://` (e.g. the Vercel deployment) can only reach a relay over `wss://`. The relay isn't deployed yet; for production it needs a TLS address (set `RELAY_ANNOUNCE`, e.g. behind Render's proxy).
+> A page served over `https://` (e.g. the Vercel deployment) can only reach a relay over `wss://`. Production uses the relay deployed on Render at `/dns4/shadow-network-relay.onrender.com/tcp/443/wss` (set in `frontend/.env.production`). It's on the free plan, so after 15 minutes idle the first visitor waits ~50 s while it wakes.
 
 ---
 
@@ -472,7 +472,7 @@ RELAY_ANNOUNCE=                # public wss address when behind a TLS proxy
 - [ ] PWA support (offline caching + Add to Home Screen)
 - [ ] OCR for scanned PDFs (pytesseract)
 - [x] Campus relay node for P2P (`p2p-relay/`)
-- [ ] Deploy the P2P relay with a `wss://` address for production
+- [x] Deploy the P2P relay with a `wss://` address for production (Render)
 - [ ] Mobile app (React Native)
 
 ---

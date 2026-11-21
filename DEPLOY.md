@@ -9,6 +9,7 @@ Service             Platform         Cost    URL pattern
 Frontend            Vercel           Free    shadow-network.vercel.app
 Backend (Node.js)   Render           Free    shadow-network-backend.onrender.com
 AI Engine (Python)  Render           Free    shadow-network-ai.onrender.com
+P2P relay (Node)    Render           Free    shadow-network-relay.onrender.com
 Database            MongoDB Atlas    Free    cluster.mongodb.net
 File Storage        Pinata (IPFS)    Free    gateway.pinata.cloud
 
@@ -150,6 +151,32 @@ STEP 4 — RENDER (Backend + AI Engine)
    https://shadow-network-backend-xxxx.onrender.com
    SAVE THIS URL.
 
+--- 4C: P2P relay (only needed for P2P mode) ---
+
+Browsers on an https:// page can only reach the relay over wss://, and
+Render's proxy provides the TLS.
+
+1. render.com → New → Web Service → same "shadow-network" repo
+2. Fill in:
+   Name:            shadow-network-relay
+   Root Directory:  p2p-relay
+   Build Command:   npm ci
+   Start Command:   npm start
+   Instance Type:   Free
+3. Environment Variables (optional but recommended):
+   RELAY_SEED  → click "Generate"   (keeps the relay's peer ID stable across
+                                      restarts; the free disk is wiped)
+   Nothing else is needed: the relay announces
+   /dns4/$RENDER_EXTERNAL_HOSTNAME/tcp/443/wss and listens on $PORT.
+4. Create Web Service. The log prints:
+   /dns4/shadow-network-relay.onrender.com/tcp/443/wss/p2p/12D3KooW...
+5. Put that address (the /p2p/... suffix is optional) in VITE_P2P_RELAYS
+   (frontend/.env.production, or Vercel env vars in Step 5).
+
+Note: the free relay sleeps after 15 min idle; the first browser then waits
+~50 s for it to wake and reconnects automatically. A plain HTTPS GET to the
+relay returns 400 (it only speaks WebSocket) but still wakes it.
+
 ==========================================================================
 STEP 5 — VERCEL (Frontend)
 ==========================================================================
@@ -163,8 +190,10 @@ STEP 5 — VERCEL (Frontend)
    Output Directory:  dist
 
 4. Environment Variables → Add (these override frontend/.env.production):
-   VITE_API_URL   = https://shadow-network-backend-xxxx.onrender.com/api/v1
-   VITE_P2P_MODE  = false
+   VITE_API_URL     = https://shadow-network-backend-xxxx.onrender.com/api/v1
+   VITE_P2P_MODE    = true    (false to turn P2P off)
+   VITE_P2P_RELAYS  = /dns4/shadow-network-relay.onrender.com/tcp/443/wss
+   Leave a variable out to use the value in frontend/.env.production.
 
 5. Click Deploy
 6. Your app will be live at:
