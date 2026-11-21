@@ -14,10 +14,13 @@ const healthRoutes   = require('./routes/healthRoutes');
 const app  = express();
 const PORT = process.env.PORT || 5000;
 
-// ── Restricted CORS ──────────────────────────────────────────────────────────
-// ALLOWED_ORIGINS is a comma-separated list of exact frontend origins.
-// Example .env value: https://shadow-network.vercel.app,http://localhost:3000
-// No wildcard pattern-matching; unknown origins are blocked.
+// Render (and most PaaS hosts) sit behind a single reverse proxy. Without this,
+// every request appears to come from the proxy's IP and all clients share one
+// rate-limit bucket.
+app.set('trust proxy', 1);
+
+// Comma-separated list of exact frontend origins, e.g.
+// https://shadow-network.vercel.app,http://localhost:3000
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
   .split(',')
   .map((s) => s.trim().replace(/\/$/, ''))
@@ -25,16 +28,17 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000')
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no Origin header (same-origin, curl, mobile apps)
-    if (!origin) return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-    callback(new Error(`CORS blocked: ${origin}`));
+    // Requests without an Origin header (curl, server-to-server) are allowed;
+    // CORS only restricts browsers.
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    const err = new Error(`Origin not allowed by CORS: ${origin}`);
+    err.statusCode = 403;
+    callback(err);
   },
-  credentials: true,
 }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: '100kb' }));
 
 app.use('/api/v1', authRoutes);
 app.use('/api/v1', fileRoutes);
@@ -44,10 +48,10 @@ app.use('/api/v1', semanticRoutes);
 app.use('/api/v1', healthRoutes);
 
 app.get('/', (req, res) => {
-  res.json({ message: '🌐 Shadow Network API', status: 'running', version: '2.0.0' });
+  res.json({ message: 'Shadow Network API', status: 'running', version: '2.0.0' });
 });
 
-app.use('*', (req, res) =>
+app.use((req, res) =>
   res.status(404).json({ success: false, error: `Route ${req.originalUrl} not found` })
 );
 app.use(errorHandler);
@@ -55,12 +59,13 @@ app.use(errorHandler);
 const start = async () => {
   await connectDB();
   app.listen(PORT, () => {
-    console.log(`\n🚀 Shadow Network API running on port ${PORT}`);
-    console.log(`🔒 CORS allowed origins: ${ALLOWED_ORIGINS.join(', ')}\n`);
+    console.log(`Shadow Network API listening on port ${PORT}`);
+    console.log(`CORS allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
   });
 };
 
 if (require.main === module) {
   start();
 }
+
 module.exports = app;

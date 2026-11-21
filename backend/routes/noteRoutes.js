@@ -1,27 +1,20 @@
-// routes/noteRoutes.js
-// All routes for note metadata operations.
-
 const express = require('express');
-const router  = express.Router();
+const { getAllNotes, searchNotes, getNoteById, deleteNote } = require('../controllers/notesController');
+const { requireAuth } = require('../middleware/auth');
 const {
-  getAllNotes,
-  searchNotes,
-  getNoteById,
-  deleteNote,
-} = require('../controllers/notesController');
-const { requireAuth }                                        = require('../middleware/auth');
-const { validateSearch, validateNoteList, handleValidation } = require('../middleware/validators');
+  validateNoteId, validateSearch, validateNoteList, handleValidation,
+} = require('../middleware/validators');
 
-// GET /notes?subject=physics&limit=10&page=1  ← PUBLIC + validated query params
+const router = express.Router();
+
+// GET /notes?subject=physics&limit=10&page=1
 router.get('/notes', validateNoteList, handleValidation, getAllNotes);
 
-// GET /search?q=machine+learning&limit=5  ← PUBLIC + validated
+// GET /search?q=machine+learning&limit=5
 router.get('/search', validateSearch, handleValidation, searchNotes);
 
-// GET /notes/:id  ← PUBLIC
-router.get('/notes/:id', getNoteById);
+router.get('/notes/:id', validateNoteId, handleValidation, getNoteById);
 
-// DELETE /notes/:id  ← PROTECTED: requires valid JWT
-router.delete('/notes/:id', requireAuth, deleteNote);
+router.delete('/notes/:id', requireAuth, validateNoteId, handleValidation, deleteNote);
 
 module.exports = router;

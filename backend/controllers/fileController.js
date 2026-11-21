@@ -1,15 +1,28 @@
-// backend/controllers/fileController.js  —  Phase 1 + Phase 4 embedding trigger
 // POST /upload   GET /download/:cid
 
 const { uploadToIPFS, downloadFromIPFS } = require('../services/ipfsService');
 const { embedDocument }                  = require('../services/aiService');
 const Note                               = require('../models/Note');
 
-/**
- * POST /api/v1/upload
- * Accepts file + metadata, stores on IPFS, saves to MongoDB,
- * then ASYNC triggers embedding (Phase 4) — does not block the response.
- */
+// CIDv0 (Qm…) and CIDv1 (bafy…) are base58/base32 strings; reject anything else
+// before it ends up in a gateway URL.
+const CID_PATTERN = /^[a-zA-Z0-9]{46,100}$/;
+
+// Only these types can be text-extracted by the AI engine.
+const EMBEDDABLE_TYPES = new Set([
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+]);
+
+const indexInBackground = (note) => {
+  if (!EMBEDDABLE_TYPES.has(note.mimeType)) return;
+  embedDocument(note.cid, note._id.toString(), note.mimeType)
+    .then(() => Note.updateOne({ _id: note._id }, { embeddingIndexed: true }))
+    .then(() => console.log(`Embedding stored for note ${note._id}`))
+    .catch((err) => console.warn(`Embedding failed for note ${note._id}: ${err.message}`));
+};
+
 const uploadFile = async (req, res, next) => {
   try {
     if (!req.file) {
@@ -17,22 +30,14 @@ const uploadFile = async (req, res, next) => {
     }
 
     const { title, subject, tags, uploadedBy } = req.body;
-    if (!title || !subject) {
-      return res.status(400).json({ success: false, error: 'title and subject are required' });
-    }
+    const tagsArray = tags ? [...new Set(tags.split(',').map((t) => t.trim()).filter(Boolean))] : [];
 
-    const tagsArray = tags
-      ? tags.split(',').map((t) => t.trim()).filter(Boolean)
-      : [];
+    const cid = await uploadToIPFS(req.file.buffer, req.file.originalname, req.file.mimetype);
 
-    // ── 1. Upload to IPFS ──────────────────────────────────────
-    const cid = await uploadToIPFS(req.file.buffer, req.file.originalname);
-
-    // ── 2. Save metadata to MongoDB ───────────────────────────
     const note = await Note.create({
       title,
       subject,
-      tags: tagsArray,
+      tags:         tagsArray,
       cid,
       originalName: req.file.originalname,
       mimeType:     req.file.mimetype,
@@ -40,61 +45,39 @@ const uploadFile = async (req, res, next) => {
       uploadedBy:   uploadedBy || 'anonymous',
     });
 
-    // ── 3. Trigger FAISS embedding (Phase 4) ──────────────────
-    // Fire-and-forget: we don't await this — it runs in background.
-    // If it fails (AI engine down etc.) it logs a warning but upload succeeds.
-    embedDocument(cid, note._id.toString(), req.file.mimetype)
-      .then(() => {
-        // Update embeddingIndexed flag in MongoDB
-        Note.findByIdAndUpdate(note._id, { embeddingIndexed: true }).catch(() => {});
-        console.log(`🔢 Embedding created for note: ${note._id}`);
-      })
-      .catch((err) => {
-        console.warn(`⚠️  Embedding failed for note ${note._id}: ${err.message}`);
-        // Non-fatal: doc is still uploaded and keyword-searchable
-      });
+    // Don't make the client wait for the embedding; the note is already
+    // keyword-searchable, and POST /notes/:id/embed can retry a failure.
+    indexInBackground(note);
 
-    // ── 4. Return success immediately (don't wait for embedding) ─
     res.status(201).json({
       success: true,
-      message: 'File uploaded successfully. Semantic indexing running in background.',
-      data: {
-        ...note.toPublic(),
-        downloadUrl: `/api/v1/download/${cid}`,
-      },
+      message: EMBEDDABLE_TYPES.has(note.mimeType)
+        ? 'File uploaded. Semantic indexing is running in the background.'
+        : 'File uploaded.',
+      data: { ...note.toPublic(), downloadUrl: `/api/v1/download/${cid}` },
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * GET /api/v1/download/:cid
- * Fetches a file from IPFS by CID and streams it to the client.
- */
 const downloadFile = async (req, res, next) => {
   try {
     const { cid } = req.params;
+    if (!CID_PATTERN.test(cid)) {
+      return res.status(400).json({ success: false, error: 'Invalid CID' });
+    }
 
-    let note = null;
-    try { note = await Note.findOne({ cid }); } catch (_) {}
-
+    const note       = await Note.findOne({ cid });
     const fileBuffer = await downloadFromIPFS(cid);
 
-    const mimeType = note?.mimeType || 'application/octet-stream';
-    const fileName = note?.originalName || `file-${cid}`;
-
-    res.set({
-      'Content-Type':        mimeType,
-      'Content-Disposition': `attachment; filename="${fileName}"`,
-      'Content-Length':      fileBuffer.length,
-      'X-IPFS-CID':          cid,
-    });
+    // res.attachment() encodes non-ASCII and quote characters in the filename
+    // correctly (RFC 6266); building the header by hand throws on them.
+    res.attachment(note?.originalName || `file-${cid}`);
+    res.type(note?.mimeType || 'application/octet-stream');
+    res.set('X-IPFS-CID', cid);
     res.send(fileBuffer);
   } catch (error) {
-    if (error.message?.includes('not found') || error.message?.includes('invalid')) {
-      return res.status(404).json({ success: false, error: 'File not found on IPFS' });
-    }
     next(error);
   }
 };

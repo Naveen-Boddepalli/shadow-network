@@ -1,6 +1,9 @@
-// models/Note.js  —  Phase 1 + 2 + 3 + 4
-
 const mongoose = require('mongoose');
+
+// Older records were HTML-escaped on input by the validator. Decode them on the
+// way out so the UI shows "Tom's notes" rather than "Tom&#x27;s notes".
+const ENTITIES = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#x27;': "'", '&#x2F;': '/', '&#x5C;': '\\', '&#96;': '`' };
+const decode = (s) => (typeof s === 'string' ? s.replace(/&(amp|lt|gt|quot|#x27|#x2F|#x5C|#96);/g, (m) => ENTITIES[m]) : s);
 
 const noteSchema = new mongoose.Schema(
   {
@@ -11,37 +14,36 @@ const noteSchema = new mongoose.Schema(
     originalName: { type: String, required: true },
     mimeType:     { type: String, default: 'application/octet-stream' },
     fileSize:     { type: Number, default: 0 },
-    uploadedBy:   { type: String, default: 'anonymous' },
+    uploadedBy:   { type: String, default: 'anonymous', trim: true },
 
-    // Phase 3: AI summary cache
+    // Cached AI summary
     summary:            { type: String, default: null },
     summaryGeneratedAt: { type: Date,   default: null },
 
-    // Phase 4: FAISS embedding status
-    // True once the document's vector has been added to the FAISS index.
-    // False/undefined means not yet indexed (AI engine may have been down at upload time).
+    // True once the AI engine has stored this note's vector for semantic search.
+    // Stays false if the AI engine was unreachable at upload time.
     embeddingIndexed: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
 
-// MongoDB full-text search index (Phase 2)
 noteSchema.index({ title: 'text', subject: 'text', tags: 'text' });
+noteSchema.index({ createdAt: -1 });
 
 noteSchema.methods.toPublic = function () {
   return {
     id:                 this._id,
-    title:              this.title,
-    subject:            this.subject,
+    title:              decode(this.title),
+    subject:            decode(this.subject),
     tags:               this.tags,
     cid:                this.cid,
     originalName:       this.originalName,
     mimeType:           this.mimeType,
     fileSize:           this.fileSize,
-    uploadedBy:         this.uploadedBy,
+    uploadedBy:         decode(this.uploadedBy),
     hasSummary:         !!this.summary,
     summaryGeneratedAt: this.summaryGeneratedAt,
-    embeddingIndexed:   this.embeddingIndexed,  // Phase 4
+    embeddingIndexed:   this.embeddingIndexed,
     uploadedAt:         this.createdAt,
   };
 };

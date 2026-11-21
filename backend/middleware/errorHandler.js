@@ -1,48 +1,41 @@
-// middleware/errorHandler.js
-// Central error handler — all errors thrown in controllers land here.
-// Express recognises a 4-argument middleware as an error handler.
+// Central error handler. Express treats a 4-argument middleware as an error handler.
 
+// eslint-disable-next-line no-unused-vars
 const errorHandler = (err, req, res, next) => {
-  console.error(`[ERROR] ${err.message}`);
+  const send = (status, error) => res.status(status).json({ success: false, error });
 
-  // Multer errors (file too large, wrong type)
   if (err.name === 'MulterError') {
-    return res.status(400).json({
-      success: false,
-      error: `File upload error: ${err.message}`,
-    });
+    const msg = err.code === 'LIMIT_FILE_SIZE' ? 'File is larger than the 50 MB limit' : err.message;
+    return send(400, `File upload error: ${msg}`);
   }
 
-  // Mongoose validation errors (missing required fields etc.)
+  // Malformed ObjectId in a :id route param
+  if (err.name === 'CastError') {
+    return send(400, `Invalid ${err.path === '_id' ? 'note ID' : err.path}`);
+  }
+
   if (err.name === 'ValidationError') {
-    const messages = Object.values(err.errors).map((e) => e.message);
-    return res.status(400).json({
-      success: false,
-      error: messages.join(', '),
-    });
+    return send(400, Object.values(err.errors).map((e) => e.message).join(', '));
   }
 
-  // Mongoose duplicate key (same CID uploaded twice)
+  // Unique index on `cid`: the exact same file was already uploaded
   if (err.code === 11000) {
-    return res.status(409).json({
-      success: false,
-      error: 'This file has already been uploaded (duplicate CID)',
-    });
+    return send(409, 'This file has already been uploaded (duplicate CID)');
   }
 
-  // IPFS connection errors
-  if (err.message && err.message.includes('ECONNREFUSED')) {
-    return res.status(503).json({
-      success: false,
-      error: 'IPFS node is not running. Start Kubo with: ipfs daemon',
-    });
+  // Malformed JSON body
+  if (err.type === 'entity.parse.failed') {
+    return send(400, 'Request body is not valid JSON');
   }
 
-  // Generic fallback
-  res.status(err.statusCode || 500).json({
-    success: false,
-    error: err.message || 'Internal server error',
-  });
+  const status = err.statusCode || 500;
+  if (status >= 500) console.error(`[error] ${req.method} ${req.originalUrl}:`, err);
+
+  // Don't leak internals on unexpected 500s in production
+  const message = status >= 500 && process.env.NODE_ENV === 'production' && !err.expose
+    ? 'Internal server error'
+    : err.message || 'Internal server error';
+  send(status, message);
 };
 
 module.exports = errorHandler;
