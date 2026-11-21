@@ -262,6 +262,14 @@ All backend endpoints are prefixed with `/api/v1`.
 
 ---
 
+## 🚢 Deploy & CI
+
+* Frontend: Vercel deploys `frontend/` on every push to `main`.
+* Backend + AI engine: [render-deployments.yml](.github/workflows/render-deployments.yml) runs `npm test` (backend) and `pytest` (AI engine, ML models stubbed via `requirements-dev.txt`) for whichever service changed, then deploys it to Render on pushes to `main`. Pull requests run the tests only.
+* [render.yaml](render.yaml) lists every env var; secrets (`JWT_SECRET`, `API_SECRET`, `ALLOWED_ORIGINS`, `MONGO_URI`, Pinata keys, `AI_ENGINE_KEY`) are `sync: false` and set in the Render dashboard. The AI engine pins `PYTHON_VERSION=3.11.8`.
+
+---
+
 ## 💡 Key Design Decisions
 
 1. **MongoDB Atlas Vector Search over FAISS on Disk:**

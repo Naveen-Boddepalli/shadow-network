@@ -94,6 +94,8 @@ STEP 4 — RENDER (Backend + AI Engine)
    Build Command:    pip install -r requirements.txt
    Start Command:    uvicorn main:app --host 0.0.0.0 --port $PORT
    Instance Type:    Free
+   (If you created the service before render.yaml set it, add
+    PYTHON_VERSION = 3.11.8 — torch 2.2 has no wheels for newer Pythons.)
 
 4. Environment Variables → Add these one by one:
    SUMMARIZATION_MODEL   = sshleifer/distilbart-cnn-6-6
@@ -220,6 +222,6 @@ git commit -m "your change description"
 git push
 
 → Vercel deploys the frontend on every push to main. The GitHub Action in
-  .github/workflows/render-deployments.yml deploys the backend and AI engine
-  to Render when their folders change (needs the RENDER_API_KEY,
+  .github/workflows/render-deployments.yml runs the backend and AI engine
+  tests and, if they pass, deploys whichever service changed to Render (needs the RENDER_API_KEY,
   RENDER_SERVICE_ID_BACKEND and RENDER_SERVICE_ID_AI repository secrets).

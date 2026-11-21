@@ -388,8 +388,8 @@ The project deploys to three free-tier platforms:
 | Service | Platform | Auto-deploy |
 |---|---|---|
 | Frontend | Vercel | ✅ On every push to `main` |
-| Backend | Render | ✅ GitHub Action, when `backend/` changes |
-| AI Engine | Render | ✅ GitHub Action, when `ai-engine/` changes |
+| Backend | Render | ✅ GitHub Action, when `backend/` changes and tests pass |
+| AI Engine | Render | ✅ GitHub Action, when `ai-engine/` changes and tests pass |
 | Database | MongoDB Atlas | — (managed) |
 | Files | Pinata IPFS | — (managed) |
 
