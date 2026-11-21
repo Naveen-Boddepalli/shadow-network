@@ -9,10 +9,17 @@
 //     topic so browsers learn each other's addresses.
 //
 // Usage:  npm start           (listens on ws://0.0.0.0:9090)
-// Env:    RELAY_PORT=9090
+// Env:    RELAY_PORT=9090   (falls back to PORT, which Render sets)
 //         RELAY_ANNOUNCE=/dns4/relay.example.com/tcp/443/wss   (optional, comma-separated;
-//                         use when behind a TLS proxy such as Render)
-//         RELAY_KEY_FILE=.relay-key   (persisted identity so the address stays stable)
+//                         use when behind a TLS proxy). On Render this is derived
+//                         automatically from RENDER_EXTERNAL_HOSTNAME.
+//         RELAY_SEED=<random string>  (optional; derives a stable identity on hosts
+//                         with an ephemeral disk, e.g. Render's free tier)
+//         RELAY_KEY_FILE=.relay-key   (persisted identity when RELAY_SEED is unset)
+//
+// Browsers don't need the relay's peer ID: they can dial e.g.
+// /dns4/<host>/tcp/443/wss and learn it on connect, so a changing identity is
+// harmless. A stable one just makes the printed addresses reusable.
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
@@ -24,16 +31,23 @@ import { circuitRelayServer } from '@libp2p/circuit-relay-v2';
 import { identify } from '@libp2p/identify';
 import { ping } from '@libp2p/ping';
 import { gossipsub } from '@libp2p/gossipsub';
-import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys';
+import { generateKeyPair, generateKeyPairFromSeed, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys';
+import { createHash } from 'node:crypto';
 
 // Must match DISCOVERY_TOPIC in frontend/src/services/p2p.js
 const DISCOVERY_TOPIC = 'shadow-network._peer-discovery._p2p._pubsub';
 
 const PORT = Number(process.env.RELAY_PORT || process.env.PORT || 9090);
 const KEY_FILE = process.env.RELAY_KEY_FILE || new URL('./.relay-key', import.meta.url).pathname;
-const ANNOUNCE = (process.env.RELAY_ANNOUNCE || '').split(',').map((s) => s.trim()).filter(Boolean);
+const RENDER_HOST = process.env.RENDER_EXTERNAL_HOSTNAME;
+const ANNOUNCE = (process.env.RELAY_ANNOUNCE || (RENDER_HOST ? `/dns4/${RENDER_HOST}/tcp/443/wss` : ''))
+  .split(',').map((s) => s.trim()).filter(Boolean);
 
 const loadOrCreateKey = async () => {
+  if (process.env.RELAY_SEED) {
+    const seed = createHash('sha256').update(process.env.RELAY_SEED).digest();
+    return generateKeyPairFromSeed('Ed25519', seed);
+  }
   try {
     return privateKeyFromProtobuf(await readFile(KEY_FILE));
   } catch {
@@ -112,8 +126,11 @@ const lanAddrs = Object.values(networkInterfaces())
 
 console.log('\n🛰  Shadow Network relay running');
 console.log(`   Peer ID: ${peerId}\n`);
-console.log('Set VITE_P2P_RELAYS in frontend/.env to one of:');
-for (const a of [`/ip4/127.0.0.1/tcp/${PORT}/ws/p2p/${peerId}`, ...lanAddrs, ...ANNOUNCE.map((a) => `${a}/p2p/${peerId}`)]) {
+console.log('Set VITE_P2P_RELAYS in frontend/.env to one of these (the /p2p/... suffix is optional):');
+const shown = ANNOUNCE.length
+  ? ANNOUNCE.map((a) => `${a}/p2p/${peerId}`)
+  : [`/ip4/127.0.0.1/tcp/${PORT}/ws/p2p/${peerId}`, ...lanAddrs];
+for (const a of shown) {
   console.log(`   ${a}`);
 }
 console.log('');

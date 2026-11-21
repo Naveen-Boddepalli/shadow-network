@@ -65,3 +65,21 @@ services:
         value: shadow-network
       - key: AI_ENGINE_KEY
         sync: false          # optional; must match the backend's AI_ENGINE_KEY
+
+  # ── P2P relay (browser peer discovery + WebRTC signalling) ──
+  # Render terminates TLS, so browsers reach it at
+  #   /dns4/<service>.onrender.com/tcp/443/wss
+  # Put that in VITE_P2P_RELAYS for the frontend. The relay derives that
+  # address itself from RENDER_EXTERNAL_HOSTNAME.
+  - type: web
+    name: shadow-network-relay
+    runtime: node
+    rootDir: p2p-relay
+    buildCommand: npm ci
+    startCommand: npm start
+    plan: free
+    envVars:
+      # Stable relay identity across restarts (free tier has no persistent
+      # disk). Optional: browsers learn the peer ID on connect anyway.
+      - key: RELAY_SEED
+        generateValue: true

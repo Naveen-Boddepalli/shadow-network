@@ -31,7 +31,10 @@ export const DISCOVERY_TOPIC = 'shadow-network._peer-discovery._p2p._pubsub';
 const DOWNLOAD_TIMEOUT_MS = 60_000;
 
 // Comma-separated multiaddrs of Shadow Network relays, e.g.
-// /ip4/192.168.1.20/tcp/9090/ws/p2p/12D3KooW...
+// /ip4/192.168.1.20/tcp/9090/ws/p2p/12D3KooW...   (campus LAN)
+// /dns4/shadow-network-relay.onrender.com/tcp/443/wss   (hosted)
+// The /p2p/<peer id> suffix is optional: the ID is learned on connect, which
+// keeps working when a hosted relay's identity changes after a restart.
 const RELAYS = (import.meta.env.VITE_P2P_RELAYS || '')
   .split(',')
   .map((s) => s.trim())
@@ -45,6 +48,7 @@ let heliaInstance = null;
 let unixFsInstance = null;
 let initPromise = null;
 const relayPeerIds = new Set();
+const relayPeerByAddr = new Map(); // relay multiaddr string -> peer ID string
 let shadowDiscovery = null;
 
 const buildLibp2pConfig = () => {
@@ -80,29 +84,35 @@ const buildLibp2pConfig = () => {
   return config;
 };
 
+const connectToRelay = async (libp2p, addr) => {
+  const ma = multiaddr(addr);
+  const declared = ma.getComponents().findLast((c) => c.name === 'p2p')?.value;
+  if (declared) relayPeerIds.add(declared);
+
+  const connection = await libp2p.dial(ma, { signal: AbortSignal.timeout(30_000) });
+  const peerId = connection.remotePeer;
+  const id = peerId.toString();
+  relayPeerIds.add(id);
+  relayPeerByAddr.set(addr, id);
+  console.log('🛰  Connected to relay:', addr);
+
+  // Tag the relay keep-alive so libp2p reconnects if the link drops.
+  // Done *after* the first dial: tagging triggers libp2p's own reconnect
+  // dial, and two simultaneous dials leave a duplicate connection whose
+  // teardown kills the relay's gossipsub stream.
+  await libp2p.peerStore.merge(peerId, {
+    multiaddrs: [ma.decapsulateCode(421)], // 421 = /p2p, the peer store wants transport addrs
+    tags: { [KEEP_ALIVE]: { value: 100 } },
+  });
+};
+
 const connectToRelays = async (libp2p) => {
   await Promise.allSettled(
-    RELAYS.map(async (addr) => {
-      const ma = multiaddr(addr);
-      const peerId = ma.getComponents().findLast((c) => c.name === 'p2p')?.value;
-      if (peerId) relayPeerIds.add(peerId);
-      try {
-        await libp2p.dial(ma);
-        console.log('🛰  Connected to relay:', addr);
-      } catch (err) {
+    RELAYS.map((addr) =>
+      connectToRelay(libp2p, addr).catch((err) => {
         console.warn('Could not reach relay', addr, err.message);
-      }
-      // Tag the relay keep-alive so libp2p reconnects if the link drops.
-      // Done *after* the first dial: tagging triggers libp2p's own reconnect
-      // dial, and two simultaneous dials leave a duplicate connection whose
-      // teardown kills the relay's gossipsub stream.
-      if (peerId) {
-        await libp2p.peerStore.merge(peerIdFromString(peerId), {
-          multiaddrs: [ma],
-          tags: { [KEEP_ALIVE]: { value: 100 } },
-        });
-      }
-    })
+      })
+    )
   );
 };
 
@@ -114,22 +124,36 @@ let watchdog = null;
 // can leave the relay link connected but deaf. p2p-relay repairs this on its
 // side; this also covers older relays. Detect it — relay connected but not a
 // topic subscriber — and reconnect for fresh streams.
+let healing = false;
 const healRelayLinks = async (libp2p) => {
+  // A sleeping free-tier relay can take ~30-50 s to wake; don't stack attempts.
+  if (healing) return;
+  healing = true;
+  try {
+    await healRelayLinksOnce(libp2p);
+  } finally {
+    healing = false;
+  }
+};
+
+const healRelayLinksOnce = async (libp2p) => {
   const subscribers = new Set(
     libp2p.services.pubsub.getSubscribers(DISCOVERY_TOPIC).map((p) => p.toString())
   );
-  for (const relay of relayPeerIds) {
-    const peerId = peerIdFromString(relay);
-    if (libp2p.getConnections(peerId).length === 0) {
-      libp2p.dial(peerId).catch(() => {}); // relay down — keep trying
-    } else if (!subscribers.has(relay)) {
-      console.warn('Relay pubsub link is stale — reconnecting');
-      try {
-        await libp2p.hangUp(peerId);
-        await libp2p.dial(peerId);
-      } catch (err) {
-        console.debug('Relay reconnect failed', err.message);
+  for (const addr of RELAYS) {
+    const known = relayPeerByAddr.get(addr);
+    const connected = known != null && libp2p.getConnections(peerIdFromString(known)).length > 0;
+    try {
+      if (!connected) {
+        // Relay down, asleep, or restarted with a new identity: dial by address.
+        await connectToRelay(libp2p, addr);
+      } else if (!subscribers.has(known)) {
+        console.warn('Relay pubsub link is stale — reconnecting');
+        await libp2p.hangUp(peerIdFromString(known));
+        await connectToRelay(libp2p, addr);
       }
+    } catch (err) {
+      console.debug('Relay reconnect failed', addr, err.message);
     }
   }
 };
