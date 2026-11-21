@@ -110,7 +110,7 @@ const Peers = () => {
             },
             {
               label: 'Relay',
-              value: !initialized ? '—' : !relayConfigured ? 'Not set' : relayConnected ? 'Connected' : 'Unreachable',
+              value: !initialized ? '—' : !relayConfigured ? 'Not set' : relayConnected ? 'Connected' : 'Waking relay…',
               badge: relayConnected ? 'badge-green' : initialized ? 'badge-yellow' : 'badge-gray',
             },
             {
