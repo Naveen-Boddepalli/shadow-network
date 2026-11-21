@@ -79,8 +79,11 @@ Students face three critical problems:
 
 ### 🌐 P2P Offline Mesh (Phase 5)
 - Runs a **browser-native IPFS node** (Helia), no installation needed
-- Browsers connect to each other over **WebRTC**, using a libp2p relay to find and reach peers
+- Browsers connect to each other over **WebRTC**, using a small **campus relay** ([p2p-relay/](p2p-relay/)) to find and reach peers; the relay only handles the handshake and peer discovery, and file bytes go browser-to-browser
+- Peers announce themselves over gossipsub and connect automatically
 - Fetch a file directly from a peer by its CID, without going through the backend
+- Works on a campus LAN without internet as long as the relay is reachable; files you add stay in your browser (IndexedDB) across reloads
+- No login needed for P2P-only uploads
 
 ### 🔒 Security & Hardening
 - **JWT authentication**: a shared `API_SECRET` is exchanged for a 24-hour token that protects upload, delete and AI endpoints
@@ -115,11 +118,14 @@ Students face three critical problems:
 └─────────────┘  └───────────────┘  └───────────────────┘
 
 ── P2P Mode (optional) ──────────────────────────────────
-┌──────────────┐   WebRTC    ┌──────────────┐
-│ Student A    │ ←─────────► │ Student B    │
-│ Helia Node   │  via relay  │ Helia Node   │
-│ (browser)    │             │ (browser)    │
-└──────────────┘             └──────────────┘
+┌──────────────┐  direct WebRTC  ┌──────────────┐
+│ Student A    │ ◄─────────────► │ Student B    │
+│ Helia Node   │                 │ Helia Node   │
+└──────┬───────┘                 └──────┬───────┘
+       │   signalling + discovery (ws)  │
+       └────────► ┌──────────────┐ ◄────┘
+                  │ Campus relay │  (p2p-relay/)
+                  └──────────────┘
 ```
 
 ---
@@ -390,7 +396,15 @@ The project deploys to three free-tier platforms:
 See [DEPLOY.md](DEPLOY.md) for the complete step-by-step deployment guide.
 
 ### Enable P2P Mode
-Set `VITE_P2P_MODE=true` in `frontend/.env` for local development, or in the Vercel project's environment variables for production (`frontend/.env.production` sets it for production builds).
+1. Start the relay on any machine the browsers can reach (on a campus LAN, any laptop works):
+   ```bash
+   cd p2p-relay && npm install && npm start
+   ```
+   It prints its multiaddrs, e.g. `/ip4/192.168.1.20/tcp/9090/ws/p2p/12D3KooW…`.
+2. In `frontend/.env`, set `VITE_P2P_MODE=true` and `VITE_P2P_RELAYS=<that multiaddr>`. For a LAN with no internet, also set `VITE_P2P_PUBLIC_NETWORK=false`.
+3. Open the **Peers** page. Other users on the same relay appear within about 10 seconds. Upload a file in **P2P only** mode and share its CID; peers fetch it with **Download from Peer by CID**.
+
+> A page served over `https://` (e.g. the Vercel deployment) can only reach a relay over `wss://`. The relay isn't deployed yet; for production it needs a TLS address (set `RELAY_ANNOUNCE`, e.g. behind Render's proxy).
 
 ---
 
@@ -431,6 +445,14 @@ AI_ENGINE_KEY=                 # optional; must match the backend's
 ```env
 VITE_API_URL=http://localhost:5000/api/v1
 VITE_P2P_MODE=false
+VITE_P2P_RELAYS=               # relay multiaddr(s), comma-separated
+VITE_P2P_PUBLIC_NETWORK=true   # false = relay only (offline LAN)
+```
+
+### P2P relay (`p2p-relay`)
+```env
+RELAY_PORT=9090
+RELAY_ANNOUNCE=                # public wss address when behind a TLS proxy
 ```
 
 ---
@@ -449,7 +471,8 @@ VITE_P2P_MODE=false
 - [ ] Collections / Folders for organizing notes
 - [ ] PWA support (offline caching + Add to Home Screen)
 - [ ] OCR for scanned PDFs (pytesseract)
-- [ ] Campus relay node for P2P behind NAT
+- [x] Campus relay node for P2P (`p2p-relay/`)
+- [ ] Deploy the P2P relay with a `wss://` address for production
 - [ ] Mobile app (React Native)
 
 ---

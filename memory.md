@@ -23,7 +23,7 @@ All five planned phases are implemented:
 | **Phase 2** | MongoDB Metadata + Keyword Search | **Complete** | [Note.js](backend/models/Note.js), [notesController.js](backend/controllers/notesController.js) |
 | **Phase 3** | AI Summarization (DistilBART) & Extractive Q&A (MiniLM) | **Complete** | [aiController.js](backend/controllers/aiController.js), [aiService.js](backend/services/aiService.js), [summarizer.py](ai-engine/summarizer.py), [qa.py](ai-engine/qa.py) |
 | **Phase 4** | Semantic Search (Vector Embeddings) | **Complete** | [embeddings.py](ai-engine/embeddings.py), [semanticController.js](backend/controllers/semanticController.js) |
-| **Phase 5** | Offline Browser-native P2P Sharing | **Complete** | [p2p.js](frontend/src/services/p2p.js), [P2PContext.jsx](frontend/src/context/P2PContext.jsx) |
+| **Phase 5** | Offline Browser-native P2P Sharing | **Complete** (verified browser-to-browser over a local relay) | [p2p.js](frontend/src/services/p2p.js), [P2PContext.jsx](frontend/src/context/P2PContext.jsx), [p2p-relay/index.js](p2p-relay/index.js) |
 
 ---
 
@@ -52,11 +52,16 @@ The application is structured as a three-tier architecture with a decoupled AI s
                   └─────────────┘  └───────────────┘  └───────────────────┘
 
                   ── P2P Mode (optional) ──────────────────────────────────
-                  ┌──────────────┐   WebRTC    ┌──────────────┐
-                  │ Student A    │ ←─────────► │ Student B    │
-                  │ Helia Node   │  via relay  │ Helia Node   │
-                  │ (browser)    │             │ (browser)    │
-                  └──────────────┘             └──────────────┘
+                  ┌──────────────┐  direct WebRTC DataChannel  ┌──────────────┐
+                  │ Student A    │ ◄─────────────────────────► │ Student B    │
+                  │ Helia Node   │                             │ Helia Node   │
+                  │ (browser)    │                             │ (browser)    │
+                  └──────┬───────┘                             └──────┬───────┘
+                         │ ws:// — circuit relay (signalling) + gossipsub │
+                         └──────────────►┌──────────────┐◄─────────────┘
+                                         │ Campus relay │  p2p-relay/ (Node, any
+                                         │  (libp2p)    │  machine on the LAN)
+                                         └──────────────┘
 ```
 
 ### 1. React Frontend ([frontend](frontend/))
@@ -69,6 +74,18 @@ The application is structured as a three-tier architecture with a decoupled AI s
 ### 2. Node.js Backend ([backend](backend/))
 - **Entry point:** [server.js](backend/server.js)
 - **Role:** Stores files on IPFS (Pinata, or local Kubo in development), keeps note metadata in MongoDB, issues and verifies JWTs, and proxies AI and semantic-search requests to the Python AI engine.
+
+### 2b. P2P: browser nodes + campus relay
+- **Browser node** ([p2p.js](frontend/src/services/p2p.js)): Helia 6 / libp2p 3 built from Helia's `libp2pDefaults()`, plus gossipsub (`@libp2p/gossipsub@15`) and `@libp2p/pubsub-peer-discovery`. Blocks and the node's identity (peer key) persist in IndexedDB (`blockstore-idb@3`, `datastore-idb@4`, versions matched to Helia 6's store interfaces). Uploaded files are pinned. The whole P2P stack is lazy-loaded (separate ~1.6 MB chunk), so it costs nothing when `VITE_P2P_MODE` is off.
+- **How peers meet:** each browser dials the relays in `VITE_P2P_RELAYS`, reserves a circuit-relay slot (giving it a `/p2p-circuit/webrtc` address), and announces that address every 10 s on the gossipsub topic `shadow-network._peer-discovery._p2p._pubsub`. On each announcement, other browsers dial it. The relay only carries the WebRTC handshake; file bytes go browser-to-browser, fetched by CID over bitswap.
+- **Gotchas that were fixed (keep them in mind):**
+  - libp2p v3 option is `connectionEncrypters`, not `connectionEncryption`.
+  - libp2p's browser default connection gater refuses `ws://` and private/LAN IPs, so `p2p.js` overrides `denyDialMultiaddr`.
+  - libp2p v3 no longer auto-dials discovered peers, and its `peer:discovery` event only fires for peers new to the persisted peer store, so `p2p.js` dials from the pubsub-discovery module's own `peer` event.
+  - Gossipsub keeps one outbound stream per peer and resets it only when the peer's last connection closes. On a page reload the new connection can arrive before the old one closes, so the relay patches this on `connection:close` (see `p2p-relay/index.js`). Browsers also run a 15 s watchdog that reconnects to a relay that is connected but not a topic subscriber.
+  - Tabs on the same origin share IndexedDB, so they share a peer ID. Use a different port to test two peers on one machine.
+- **Campus relay** ([p2p-relay/](p2p-relay/)): libp2p node with WebSockets, Circuit Relay v2 server and gossipsub, subscribed to the discovery topic. Keeps its key in `p2p-relay/.relay-key` (git-ignored) so its multiaddr is stable, and prints the multiaddrs to put in `VITE_P2P_RELAYS`. It is not deployed anywhere yet, so production P2P can't discover peers until it is (it needs a `wss://` address behind TLS, e.g. `RELAY_ANNOUNCE` on Render).
+- **Login:** P2P-only uploads don't need a login (`/upload` allows unauthenticated access when P2P mode is on; the server-upload option stays disabled until login).
 
 ### 3. Python AI Engine ([ai-engine](ai-engine/))
 - **Entry Point:** [main.py](ai-engine/main.py)
@@ -157,6 +174,15 @@ AI_ENGINE_KEY=
 ```env
 VITE_API_URL=http://localhost:5000/api/v1
 VITE_P2P_MODE=false
+VITE_P2P_RELAYS=            # comma-separated relay multiaddrs printed by p2p-relay
+VITE_P2P_PUBLIC_NETWORK=true # false = only talk to the relay(s); pure offline LAN
+```
+
+### 4. P2P relay (`p2p-relay`, environment variables)
+```env
+RELAY_PORT=9090            # also honours PORT
+RELAY_ANNOUNCE=            # e.g. /dns4/relay.example.com/tcp/443/wss when behind a TLS proxy
+RELAY_KEY_FILE=.relay-key
 ```
 
 ---
@@ -189,6 +215,12 @@ To start the complete local stack, run the following processes in separate termi
    cd frontend
    npm run dev
    ```
+6. **P2P relay (only for P2P mode):**
+   ```bash
+   cd p2p-relay
+   npm install && npm start
+   ```
+   Put one of the printed multiaddrs in `VITE_P2P_RELAYS` and set `VITE_P2P_MODE=true`. To try two peers on one machine, run a second frontend on another port (`npx vite --port 3001`), because same-origin tabs share a peer ID.
 
 ---
 
@@ -236,5 +268,5 @@ All backend endpoints are prefixed with `/api/v1`.
    * Render free tier contains an ephemeral filesystem; local `.faiss` vector binaries get wiped on container sleeps and restarts. Storing normalized vectors directly in MongoDB Atlas ensures embeddings remain persisted permanently.
 2. **Extractive Q&A instead of Generative LLM:**
    * The Q&A model selects a span of the document as its answer instead of generating text, so answers are always quotes from the source.
-3. **Helia browser-native IPFS Nodes:**
-   * Enables decentralized file sharing directly in the client browser using WebRTC circuit transport, removing the server as a single point of failure.
+3. **Helia browser-native IPFS Nodes + a tiny campus relay:**
+   * Files are shared browser-to-browser over WebRTC, with no backend involved. Browsers can't use mDNS or accept incoming connections, so a small libp2p relay on the LAN acts as the meeting point (signalling + peer discovery only). It works without internet as long as the relay is reachable.
