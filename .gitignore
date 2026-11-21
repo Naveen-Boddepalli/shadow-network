@@ -38,3 +38,6 @@ frontend/src/.DS_Store
 # Logs
 *.log
 npm-debug.log*
+
+# P2P relay identity (private key)
+p2p-relay/.relay-key

@@ -1,0 +1,25 @@
+{
+  "name": "shadow-network-p2p-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Campus relay for Shadow Network browser peers: circuit relay v2 + gossipsub peer discovery over WebSockets.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@chainsafe/libp2p-noise": "^17.0.0",
+    "@chainsafe/libp2p-yamux": "^8.0.1",
+    "@libp2p/circuit-relay-v2": "^4.2.7",
+    "@libp2p/crypto": "^5.1.0",
+    "@libp2p/gossipsub": "^15.0.0",
+    "@libp2p/identify": "^4.1.8",
+    "@libp2p/ping": "^3.0.0",
+    "@libp2p/websockets": "^10.1.15",
+    "libp2p": "^3.3.4"
+  }
+}
