@@ -47,10 +47,12 @@ services:
       # torch 2.2 has no wheels for newer Pythons, so don't use Render's default
       - key: PYTHON_VERSION
         value: 3.11.8
+      # Small models: the free instance has 512 MB of RAM. bart-large-cnn and
+      # roberta-base don't fit next to PyTorch and get the process killed.
       - key: SUMMARIZATION_MODEL
-        value: facebook/bart-large-cnn
+        value: sshleifer/distilbart-cnn-6-6
       - key: QA_MODEL
-        value: deepset/roberta-base-squad2
+        value: deepset/minilm-uncased-squad2
       - key: EMBEDDING_MODEL
         value: sentence-transformers/all-MiniLM-L6-v2
       - key: SUMMARY_MAX_LENGTH

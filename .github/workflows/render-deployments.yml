@@ -98,8 +98,9 @@ jobs:
   deploy-ai-engine:
     name: Deploy AI Engine
     needs: [test-ai-engine, deploy-backend]
-    # Needs passing AI tests; waits for the backend deploy if one ran, but doesn't require it
-    if: ${{ always() && github.event_name == 'push' && needs.test-ai-engine.result == 'success' && (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped') }}
+    # Only needs passing AI tests. It runs after the backend deploy so the two
+    # free-tier builds don't overlap, but a failed backend deploy doesn't block it.
+    if: ${{ always() && github.event_name == 'push' && needs.test-ai-engine.result == 'success' && needs.deploy-backend.result != 'cancelled' }}
     runs-on: ubuntu-latest
     permissions:
       deployments: write
