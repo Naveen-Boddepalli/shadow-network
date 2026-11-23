@@ -81,6 +81,7 @@ const NoteDetail = () => {
         text: d.answer,
         confidence: d.confidence,
         confident: d.confident,
+        sources: d.sources || [],
         warning: d.warning,
       }]);
     } catch (err) {
@@ -214,7 +215,7 @@ const NoteDetail = () => {
               <p className="text-secondary" style={{ marginBottom: 20 }}>
                 {note.hasSummary
                   ? 'A cached summary exists. Click below to load it.'
-                  : 'Generate a short summary of this document. The first run can take a minute while the model loads.'}
+                  : 'Generate a short summary of this document. The first run also indexes it, so it can take a little longer.'}
               </p>
               <button className="btn btn-primary" onClick={() => handleSummarize(false)}>
                 {note.hasSummary ? 'Load Summary' : 'Summarize Document'}
@@ -227,7 +228,7 @@ const NoteDetail = () => {
               <div className="spinner spinner-lg" />
               <div>
                 <div style={{ fontWeight: 500 }}>Generating summary…</div>
-                <div className="text-sm text-muted">The first request after a restart loads the model and is slower.</div>
+                <div className="text-sm text-muted">A document's first request also indexes it and is slower.</div>
               </div>
             </div>
           )}
@@ -239,6 +240,7 @@ const NoteDetail = () => {
               <div style={{
                 background: 'var(--primary-light)', borderRadius: 'var(--radius)',
                 padding: '16px 20px', marginBottom: 16, lineHeight: 1.8, fontSize: 15,
+                whiteSpace: 'pre-wrap',
               }}>
                 {summary.summary}
               </div>
@@ -259,7 +261,7 @@ const NoteDetail = () => {
         <div className="card" style={{ display: 'flex', flexDirection: 'column', height: 480 }}>
           <h2 className="section-title">Ask about this document</h2>
           <p className="text-sm text-muted" style={{ marginBottom: 16 }}>
-            Answers are passages quoted from the document, not generated text.
+            Answers are written from the most relevant passages of this document, with numbered citations to them.
           </p>
 
           {/* Messages */}
@@ -284,14 +286,23 @@ const NoteDetail = () => {
                              : 'var(--bg)',
                   color: msg.role === 'user' ? '#fff' : msg.role === 'error' ? '#991b1b' : 'var(--text-primary)',
                   border: msg.role !== 'user' ? '1px solid var(--border)' : 'none',
-                  fontSize: 14, lineHeight: 1.6,
+                  fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap',
                 }}>
                   {msg.text}
                 </div>
+                {msg.role === 'assistant' && msg.sources?.length > 0 && (
+                  <div className="text-sm text-muted mt-8" style={{ paddingLeft: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {msg.sources.map((s) => (
+                      <div key={s.n} title={s.excerpt}>
+                        <strong>[{s.n}]</strong> {s.section || 'Untitled section'}: “{s.excerpt.slice(0, 90)}…”
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {msg.role === 'assistant' && (
                   <div className="flex items-center gap-8 mt-8" style={{ paddingLeft: 4 }}>
                     <span className={`badge ${msg.confident ? 'badge-green' : 'badge-yellow'}`}>
-                      {Math.round(msg.confidence * 100)}% confidence
+                      {msg.confident ? 'From this document' : 'Not found in document'}
                     </span>
                     {msg.warning && <span className="text-sm text-muted">{msg.warning}</span>}
                   </div>

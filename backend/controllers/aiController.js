@@ -26,7 +26,7 @@ const summarizeNote = async (req, res, next) => {
       });
     }
 
-    const result = await summarizeDocument(note.cid, note.mimeType);
+    const result = await summarizeDocument(note.cid, note.mimeType, note.title);
 
     note.summary            = result.summary;
     note.summaryGeneratedAt = new Date();
@@ -49,13 +49,14 @@ const summarizeNote = async (req, res, next) => {
   }
 };
 
-// Extractive Q&A: the answer is a span copied from the document, not generated text.
+// RAG Q&A: the engine retrieves the most relevant passages and an LLM answers from
+// them only, citing them as [1], [2]; `sources` lists the passages it cited.
 const askAboutNote = async (req, res, next) => {
   try {
     const note = await Note.findById(req.params.id);
     if (!note) return res.status(404).json({ success: false, error: 'Note not found' });
 
-    const result = await askQuestion(note.cid, req.body.question, note.mimeType);
+    const result = await askQuestion(note.cid, req.body.question, note.mimeType, note.title);
 
     res.json({
       success: true,
@@ -67,9 +68,10 @@ const askAboutNote = async (req, res, next) => {
         confidence:      result.confidence,
         confident:       result.confident,
         chunks_searched: result.chunks_searched,
+        sources:         result.sources || [],
         warning: result.confident
           ? undefined
-          : 'Low confidence answer. The document may not cover this topic.',
+          : 'The document doesn\'t seem to cover this question.',
       },
     });
   } catch (error) {
