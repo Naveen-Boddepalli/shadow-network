@@ -34,6 +34,9 @@ IPFS_GATEWAY = os.getenv("IPFS_GATEWAY", "https://gateway.pinata.cloud").rstrip(
 # an X-Internal-Key header with this value (the Node backend sends it).
 AI_ENGINE_KEY = os.getenv("AI_ENGINE_KEY", "")
 
+# Below this there is nothing to summarize or search; fail clearly instead of asking the LLM.
+MIN_WORDS = 30
+
 
 def require_internal_key(x_internal_key: str | None = Header(default=None)):
     if AI_ENGINE_KEY and not secrets.compare_digest(x_internal_key or "", AI_ENGINE_KEY):
@@ -166,6 +169,14 @@ async def get_index(cid: str, mime_type: str) -> doc_index.DocIndex:
     index = await run_in_threadpool(doc_index.get_cached, cid)
     if index is None:
         text = await get_text_from_cid(cid, mime_type)
+        words = len(text.split())
+        if words < MIN_WORDS:
+            # e.g. a browser "print to PDF" of a slide deck: only the page header is text.
+            raise HTTPException(
+                422,
+                f"This document has almost no readable text ({words} words). It may be scanned "
+                "images or a printed web page; upload a text-based PDF, DOCX or TXT.",
+            )
         index = await run_in_threadpool(doc_index.get_or_build, cid, lambda: text)
     return index
 

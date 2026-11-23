@@ -8,6 +8,7 @@
 # Configure with LLM_1_BASE_URL / LLM_1_MODEL / LLM_1_API_KEY (and LLM_2_, LLM_3_).
 
 import os
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -53,6 +54,18 @@ def configured_slots(slots: list[Slot] | None = None) -> list[Slot]:
         s for s in slots
         if s.base_url and s.model and s.api_key.lower() not in PLACEHOLDER_KEYS
     ]
+
+
+def plain_text(text: str) -> str:
+    """
+    Strip the markdown models add despite being asked for plain text (the
+    frontend shows answers verbatim): **bold**, __bold__, # headings, and '*'
+    bullets, which become '-'.
+    """
+    text = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: m.group(1) or m.group(2), text)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)
+    text = re.sub(r"^(\s*)\*\s+", r"\1- ", text, flags=re.M)
+    return text.strip()
 
 
 def complete(

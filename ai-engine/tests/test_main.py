@@ -7,9 +7,12 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["MONGO_URI"] = ""
 os.environ["AI_ENGINE_KEY"] = "test-key"
+# Empty rather than unset: main.py calls load_dotenv(), which never overrides an
+# existing variable, so a developer's real ai-engine/.env can't leak into tests.
+os.environ["IPFS_GATEWAY"] = "http://ipfs.invalid"
 for n in (1, 2, 3):
     for part in ("BASE_URL", "MODEL", "API_KEY"):
-        os.environ.pop(f"LLM_{n}_{part}", None)
+        os.environ[f"LLM_{n}_{part}"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -294,3 +297,18 @@ def test_llm_reports_rate_limits(monkeypatch):
     with pytest.raises(llm.AllSlotsFailedError) as err:
         llm.complete([], slots=[llm.Slot("LLM_1", "https://a.example/v1", "m", "k")])
     assert err.value.rate_limited
+
+
+def test_near_empty_document_is_422_without_llm_call(monkeypatch, fake_llm):
+    async def fetch(cid):
+        return b"10/04/2026, 17:09 Slides - Google Slides https://docs.google.com/x 1/1"
+    monkeypatch.setattr(main, "fetch_file_from_ipfs", fetch)
+    r = client.post("/summarize", json={"cid": "QmEmpty", "mime_type": "text/plain"}, headers=AUTH)
+    assert r.status_code == 422
+    assert "almost no readable text" in r.json()["detail"]
+    assert fake_llm == []
+
+
+def test_plain_text_strips_markdown():
+    raw = "## Answer\n- **Cortex-A** – rich OS [1]\n* __Cortex-M__ – MCUs\n2 ** 3 stays"
+    assert llm.plain_text(raw) == "Answer\n- Cortex-A – rich OS [1]\n- Cortex-M – MCUs\n2 ** 3 stays"

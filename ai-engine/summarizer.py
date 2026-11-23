@@ -60,7 +60,7 @@ def summarize(index: DocIndex, title: str | None = None) -> dict:
         temperature=0.2,
         timeout=60.0,
     )
-    summary = result["text"].strip()
+    summary = llm.plain_text(result["text"])
     return {
         "summary": summary,
         "word_count_original": index.word_count,

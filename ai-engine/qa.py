@@ -69,7 +69,9 @@ def answer_question(question: str, index: DocIndex, title: str | None = None) ->
             "chunks_searched": len(index.chunks), "sources": [],
         }
 
-    text = llm.complete(build_messages(question, excerpts, title), max_tokens=700, temperature=0.1)["text"]
+    text = llm.plain_text(
+        llm.complete(build_messages(question, excerpts, title), max_tokens=700, temperature=0.1)["text"]
+    )
 
     found = NO_ANSWER_MARK not in text
     answer = text.replace(NO_ANSWER_MARK, "").strip()
