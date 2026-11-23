@@ -16,7 +16,7 @@
     "@libp2p/webrtc": "^6.0.25",
     "@libp2p/websockets": "^10.1.15",
     "@multiformats/multiaddr": "^13.0.3",
-    "axios": "^1.6.5",
+    "axios": "^1.18.1",
     "blockstore-idb": "^3.0.2",
     "datastore-idb": "^4.0.3",
     "helia": "^6.1.4",
