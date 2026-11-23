@@ -1,5 +1,11 @@
-# FastAPI AI engine: text extraction, summarization, extractive Q&A and
-# semantic search for documents stored on IPFS.
+# FastAPI AI engine: retrieval-augmented summaries and Q&A, plus semantic search,
+# for documents stored on IPFS.
+#
+#   extract text -> section-aware chunks -> int8 MiniLM vectors   (once per CID, cached)
+#   question -> BM25 + vector search, rank-fused -> top chunks -> LLM with citations
+#
+# LLM calls go through a three-slot fallback chain of OpenAI-compatible APIs
+# configured with API keys (see llm.py).
 # Run: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 import os
@@ -15,7 +21,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
+import doc_index
 import embeddings
+import llm
 import qa
 import summarizer
 from extractor import extract_text
@@ -34,8 +42,8 @@ def require_internal_key(x_internal_key: str | None = Header(default=None)):
 
 app = FastAPI(
     title="Shadow Network AI Engine",
-    version="2.0.0",
-    description="Summarization, Q&A and semantic search for IPFS documents",
+    version="3.0.0",
+    description="RAG summaries, Q&A and semantic search for IPFS documents",
 )
 
 protected = [Depends(require_internal_key)]
@@ -46,6 +54,7 @@ protected = [Depends(require_internal_key)]
 class SummarizeRequest(BaseModel):
     cid: str
     mime_type: str = "application/pdf"
+    title: str | None = Field(default=None, max_length=300)
 
 
 class SummarizeResponse(BaseModel):
@@ -60,6 +69,13 @@ class AskRequest(BaseModel):
     cid: str
     question: str = Field(..., min_length=5, max_length=500)
     mime_type: str = "application/pdf"
+    title: str | None = Field(default=None, max_length=300)
+
+
+class Source(BaseModel):
+    n: int
+    section: str
+    excerpt: str
 
 
 class AskResponse(BaseModel):
@@ -69,6 +85,7 @@ class AskResponse(BaseModel):
     confidence: float
     confident: bool
     chunks_searched: int
+    sources: list[Source] = []
 
 
 class EmbedRequest(BaseModel):
@@ -81,6 +98,7 @@ class EmbedResponse(BaseModel):
     note_id: str
     indexed: bool
     reason: str | None = None
+    chunks: int = 0
 
 
 class SemanticSearchRequest(BaseModel):
@@ -143,6 +161,27 @@ async def get_text_from_cid(cid: str, mime_type: str) -> str:
         raise HTTPException(422, f"Text extraction failed ({type(e).__name__}): {e}")
 
 
+async def get_index(cid: str, mime_type: str) -> doc_index.DocIndex:
+    """The CID's retrieval index: from memory, then MongoDB, else fetched, extracted and built."""
+    index = await run_in_threadpool(doc_index.get_cached, cid)
+    if index is None:
+        text = await get_text_from_cid(cid, mime_type)
+        index = await run_in_threadpool(doc_index.get_or_build, cid, lambda: text)
+    return index
+
+
+async def run_llm_op(fn, *args, **kwargs):
+    """Run a blocking LLM call off the event loop, mapping provider failures to HTTP errors."""
+    try:
+        return await run_in_threadpool(fn, *args, **kwargs)
+    except llm.AllSlotsFailedError as e:
+        if not llm.configured_slots():
+            raise HTTPException(503, "No LLM is configured for the AI engine. Set LLM_1_BASE_URL, LLM_1_MODEL and LLM_1_API_KEY.")
+        if e.rate_limited:
+            raise HTTPException(429, "The AI provider's rate limit was reached. Wait a minute and try again.")
+        raise HTTPException(503, "The AI provider is unavailable right now. Please try again in a minute.")
+
+
 async def run_vector_op(fn, *args, **kwargs):
     """Run a blocking embeddings/MongoDB call off the event loop."""
     try:
@@ -181,11 +220,11 @@ async def health():
 
     return {
         "status": "ok" if mongo_status == "connected" else "degraded",
-        # Models load lazily on first use, so "not_loaded" is normal after a restart.
+        # The embedding model loads lazily on first use, so "not_loaded" is normal after a restart.
         "models": {
-            "summarizer": "loaded" if summarizer.is_loaded() else "not_loaded",
-            "qa":         "loaded" if qa.is_loaded() else "not_loaded",
             "embeddings": "loaded" if embeddings.is_loaded() else "not_loaded",
+            # Slot names and models only, never keys.
+            "llm": [f"{s.name}: {s.model}" for s in llm.configured_slots()],
         },
         "mongodb": mongo_status,
         "vector_search": stats,
@@ -195,23 +234,31 @@ async def health():
 
 @app.post("/summarize", response_model=SummarizeResponse, dependencies=protected)
 async def summarize_document(req: SummarizeRequest):
-    text = await get_text_from_cid(req.cid, req.mime_type)
-    result = await run_in_threadpool(summarizer.summarize, text)
+    index = await get_index(req.cid, req.mime_type)
+    result = await run_llm_op(summarizer.summarize, index, req.title)
     return SummarizeResponse(cid=req.cid, **result)
 
 
 @app.post("/ask", response_model=AskResponse, dependencies=protected)
 async def ask_question(req: AskRequest):
-    text = await get_text_from_cid(req.cid, req.mime_type)
-    result = await run_in_threadpool(qa.answer_question, req.question, text)
+    index = await get_index(req.cid, req.mime_type)
+    result = await run_llm_op(qa.answer_question, req.question, index, req.title)
     return AskResponse(cid=req.cid, question=req.question, **result)
 
 
 @app.post("/embed", response_model=EmbedResponse, dependencies=protected)
 async def embed_document(req: EmbedRequest):
-    text = await get_text_from_cid(req.cid, req.mime_type)
-    result = await run_vector_op(embeddings.add_document, note_id=req.note_id, text=text)
-    return EmbedResponse(**result)
+    """Build (or reuse) the document's retrieval index and store its note-level vector."""
+    index = await get_index(req.cid, req.mime_type)
+    preview = index.chunks[0]["text"] if index.chunks else ""
+    result = await run_vector_op(
+        embeddings.upsert_document_vector,
+        req.note_id,
+        embeddings.document_vector(index.vectors),
+        cid=req.cid,
+        preview=preview,
+    )
+    return EmbedResponse(chunks=len(index.chunks), **result)
 
 
 @app.post("/semantic-search", response_model=SemanticSearchResponse, dependencies=protected)
@@ -224,6 +271,10 @@ async def semantic_search(req: SemanticSearchRequest):
 @app.post("/remove-embedding", dependencies=protected)
 async def remove_embedding(req: RemoveEmbeddingRequest):
     result = await run_vector_op(embeddings.remove_document, req.note_id)
+    # Drop the chunk index too, unless another note still uses the same file.
+    cid = result.pop("cid", None)
+    if cid and not await run_vector_op(embeddings.cid_in_use, cid):
+        await run_in_threadpool(doc_index.remove, cid)
     return {"success": True, **result}
 
 

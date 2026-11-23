@@ -40,25 +40,34 @@ services:
     name: shadow-network-ai
     runtime: python
     rootDir: ai-engine
-    buildCommand: pip install -r requirements.txt
+    # Downloads the int8 embedding model (~23 MB) at build time so the first
+    # request after a deploy doesn't wait for it.
+    buildCommand: pip install -r requirements.txt && python -c "import embeddings; embeddings.ensure_model_files()"
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     plan: free
     envVars:
-      # torch 2.2 has no wheels for newer Pythons, so don't use Render's default
       - key: PYTHON_VERSION
         value: 3.11.8
-      # Small models: the free instance has 512 MB of RAM. bart-large-cnn and
-      # roberta-base don't fit next to PyTorch and get the process killed.
-      - key: SUMMARIZATION_MODEL
-        value: sshleifer/distilbart-cnn-6-6
-      - key: QA_MODEL
-        value: deepset/minilm-uncased-squad2
-      - key: EMBEDDING_MODEL
-        value: sentence-transformers/all-MiniLM-L6-v2
-      - key: SUMMARY_MAX_LENGTH
-        value: 200
-      - key: SUMMARY_MIN_LENGTH
-        value: 50
+      # LLM fallback chain (see ai-engine/llm.py). Keys are secrets; set an
+      # unused slot's key to "none".
+      - key: LLM_1_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_1_MODEL
+        value: openai/gpt-oss-120b
+      - key: LLM_1_API_KEY
+        sync: false
+      - key: LLM_2_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_2_MODEL
+        value: qwen/qwen3.8-27b
+      - key: LLM_2_API_KEY
+        sync: false
+      - key: LLM_3_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_3_MODEL
+        value: openai/gpt-oss-20b
+      - key: LLM_3_API_KEY
+        sync: false
       - key: IPFS_GATEWAY
         value: https://gateway.pinata.cloud
       - key: MONGO_URI

@@ -22,9 +22,8 @@ frontend/build/
 frontend/dist/
 frontend/.vercel/
 
-# FAISS runtime data
-ai-engine/data/embeddings.faiss
-ai-engine/data/id_map.json
+# AI engine model cache (downloaded at build time)
+ai-engine/.model-cache/
 
 # Cache
 frontend/node_modules/.cache/

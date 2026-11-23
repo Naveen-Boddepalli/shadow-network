@@ -21,7 +21,7 @@ All five planned phases are implemented:
 | :--- | :--- | :--- | :--- |
 | **Phase 1** | IPFS Decentralized File Sharing | **Complete** | [fileController.js](backend/controllers/fileController.js), [ipfsService.js](backend/services/ipfsService.js) |
 | **Phase 2** | MongoDB Metadata + Keyword Search | **Complete** | [Note.js](backend/models/Note.js), [notesController.js](backend/controllers/notesController.js) |
-| **Phase 3** | AI Summarization (DistilBART) & Extractive Q&A (MiniLM) | **Complete** | [aiController.js](backend/controllers/aiController.js), [aiService.js](backend/services/aiService.js), [summarizer.py](ai-engine/summarizer.py), [qa.py](ai-engine/qa.py) |
+| **Phase 3** | RAG Summaries & Cited Q&A (hybrid retrieval + LLM API fallback chain) | **Complete** | [aiController.js](backend/controllers/aiController.js), [aiService.js](backend/services/aiService.js), [summarizer.py](ai-engine/summarizer.py), [qa.py](ai-engine/qa.py) |
 | **Phase 4** | Semantic Search (Vector Embeddings) | **Complete** | [embeddings.py](ai-engine/embeddings.py), [semanticController.js](backend/controllers/semanticController.js) |
 | **Phase 5** | Offline Browser-native P2P Sharing | **Complete** (verified browser-to-browser over a local relay) | [p2p.js](frontend/src/services/p2p.js), [P2PContext.jsx](frontend/src/context/P2PContext.jsx), [p2p-relay/index.js](p2p-relay/index.js) |
 
@@ -48,7 +48,7 @@ The application is structured as a three-tier architecture with a decoupled AI s
                   │   Pinata    │  │ MongoDB Atlas │  │  Python AI Engine  │
                   │ (IPFS Cloud)│  │  (Metadata)   │  │  FastAPI + Atlas   │
                   │             │  │               │  │  Vector Search    │
-                  │ Files + CIDs│  │ Notes + Search│  │ DistilBART/MiniLM │
+                  │ Files + CIDs│  │ Notes + Search│  │ RAG + LLM API     │
                   └─────────────┘  └───────────────┘  └───────────────────┘
 
                   ── P2P Mode (optional) ──────────────────────────────────
@@ -89,7 +89,7 @@ The application is structured as a three-tier architecture with a decoupled AI s
 
 ### 3. Python AI Engine ([ai-engine](ai-engine/))
 - **Entry Point:** [main.py](ai-engine/main.py)
-- **Role:** Text extraction (`pdfplumber`, `python-docx`), summarization (`sshleifer/distilbart-cnn-6-6`), extractive Q&A (`deepset/minilm-uncased-squad2`) and document embeddings (`all-MiniLM-L6-v2`, averaged over chunks) stored in Atlas for `$vectorSearch`. Models load lazily on first use; blocking work runs in a thread pool. If `AI_ENGINE_KEY` is set, every endpoint except `/` and `/health` requires a matching `X-Internal-Key` header.
+- **Role:** Retrieval-augmented summaries and Q&A, plus semantic search. Text extraction (`pdfplumber`, `python-docx`) → section-aware chunks ([extractor.py](ai-engine/extractor.py)) → `all-MiniLM-L6-v2` int8 ONNX vectors on onnxruntime, no PyTorch ([embeddings.py](ai-engine/embeddings.py)). The chunk index is built once per IPFS CID and stored in the `doc_chunks` collection with an in-process LRU ([doc_index.py](ai-engine/doc_index.py)). Q&A ([qa.py](ai-engine/qa.py)) runs BM25 + cosine search fused with reciprocal rank fusion ([retrieval.py](ai-engine/retrieval.py)) and asks the LLM to answer from the top chunks with `[n]` citations. Summaries ([summarizer.py](ai-engine/summarizer.py)) are one LLM call: whole text when short, MMR-selected representative chunks when long. LLM calls go through a three-slot OpenAI-compatible fallback chain configured by `LLM_{1,2,3}_{BASE_URL,MODEL,API_KEY}` ([llm.py](ai-engine/llm.py)). The note-level vector in `embeddings` is the mean of the chunk vectors. Blocking work runs in a thread pool. If `AI_ENGINE_KEY` is set, every endpoint except `/` and `/health` requires a matching `X-Internal-Key` header.
 
 ---
 
@@ -113,8 +113,17 @@ Defined in [Note.js](backend/models/Note.js):
 ### 2. Embeddings Schema (MongoDB Atlas `embeddings` collection)
 Used in [embeddings.py](ai-engine/embeddings.py):
 * `note_id`: `String` (the Note's `_id` as a string, unique index)
-* `embedding`: `[Double]` (384-dimensional vector from `all-MiniLM-L6-v2`)
+* `embedding`: `[Double]` (384-dimensional vector from `all-MiniLM-L6-v2`: the mean of the note's chunk vectors)
+* `cid`: `String` (the file's IPFS CID, linking to its `doc_chunks` index)
 * `text_preview`: `String` (first 200 characters of the document, helpful for Atlas debugging)
+
+### 3. Retrieval Index Schema (MongoDB `doc_chunks` collection)
+Used in [doc_index.py](ai-engine/doc_index.py), one document per IPFS CID:
+* `_id`: `String` (the CID; content-addressed, so an index never goes stale)
+* `version`, `model`, `dims`: rebuilt automatically when chunking or the embedding model changes
+* `chunks`: `[{ section, text }]` (section-aware chunks of ~1000 characters, `section` is a heading breadcrumb)
+* `vectors`: `Binary` (packed float32, `dims` per chunk)
+* `word_count`, `truncated`, `built_at`
 
 ---
 
@@ -159,11 +168,15 @@ ALLOWED_ORIGINS=http://localhost:3000,https://shadow-network-xxxx.vercel.app
 
 ### 2. AI Engine (`ai-engine/.env`)
 ```env
-SUMMARIZATION_MODEL=sshleifer/distilbart-cnn-6-6
-QA_MODEL=deepset/minilm-uncased-squad2
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-SUMMARY_MAX_LENGTH=200
-SUMMARY_MIN_LENGTH=50
+LLM_1_BASE_URL=https://api.groq.com/openai/v1
+LLM_1_MODEL=openai/gpt-oss-120b
+LLM_1_API_KEY=                 # your Groq key (or any OpenAI-compatible provider's)
+LLM_2_BASE_URL=https://api.groq.com/openai/v1
+LLM_2_MODEL=qwen/qwen3.8-27b
+LLM_2_API_KEY=none             # "none" turns a slot off
+LLM_3_BASE_URL=https://api.groq.com/openai/v1
+LLM_3_MODEL=openai/gpt-oss-20b
+LLM_3_API_KEY=none
 IPFS_GATEWAY=https://gateway.pinata.cloud
 MONGO_URI=mongodb+srv://<user>:<password>@shadow-network.xxxxx.mongodb.net/?retryWrites=true&w=majority
 MONGO_DB_NAME=shadow-network
@@ -250,9 +263,9 @@ All backend endpoints are prefixed with `/api/v1`.
 * `GET /semantic-search?q=<query>&k=10` - Perform a vector/meaning-based search using MongoDB Atlas Vector Search.
 
 ### 🤖 AI Utilities
-* `POST /notes/:id/summarize` - Summarizes the document with DistilBART (cached in MongoDB).
+* `POST /notes/:id/summarize` - Summarizes the document with one LLM call over its retrieval index (cached in MongoDB).
   * *Auth required.*
-* `POST /notes/:id/ask` - Answers a natural-language question with a passage extracted from the document.
+* `POST /notes/:id/ask` - Answers a question from the most relevant retrieved passages, with `[n]` citations and a `sources` list.
   * *Auth required.*
   * Body: `{ "question": "<question string>" }`
 * `DELETE /notes/:id/summary` - Clear the summary cache of a note.
@@ -265,7 +278,7 @@ All backend endpoints are prefixed with `/api/v1`.
 ## 🚢 Deploy & CI
 
 * Frontend: Vercel deploys `frontend/` on every push to `main`.
-* Backend + AI engine: [render-deployments.yml](.github/workflows/render-deployments.yml) runs `npm test` (backend) and `pytest` (AI engine, ML models stubbed via `requirements-dev.txt`) for whichever service changed, then deploys it to Render on pushes to `main`. Pull requests run the tests only.
+* Backend + AI engine: [render-deployments.yml](.github/workflows/render-deployments.yml) runs `npm test` (backend) and `pytest` (AI engine, embedding model and LLM stubbed) for whichever service changed, then deploys it to Render on pushes to `main`. Pull requests run the tests only.
 * [render.yaml](render.yaml) lists every env var; secrets (`JWT_SECRET`, `API_SECRET`, `ALLOWED_ORIGINS`, `MONGO_URI`, Pinata keys, `AI_ENGINE_KEY`) are `sync: false` and set in the Render dashboard. The AI engine pins `PYTHON_VERSION=3.11.8`.
 
 ---
@@ -274,7 +287,7 @@ All backend endpoints are prefixed with `/api/v1`.
 
 1. **MongoDB Atlas Vector Search over FAISS on Disk:**
    * Render free tier contains an ephemeral filesystem; local `.faiss` vector binaries get wiped on container sleeps and restarts. Storing normalized vectors directly in MongoDB Atlas ensures embeddings remain persisted permanently.
-2. **Extractive Q&A instead of Generative LLM:**
-   * The Q&A model selects a span of the document as its answer instead of generating text, so answers are always quotes from the source.
+2. **RAG over LLM APIs instead of local generative models:**
+   * Local DistilBART/MiniLM-SQuAD needed PyTorch, crowded the 512 MB free tier and gave weak answers. Generation now goes to an LLM API (three-slot fallback chain, the same design as Tessera), while retrieval stays local and cheap: answers are grounded in retrieved passages and cite them, and the prompt forbids facts not in the excerpts.
 3. **Helia browser-native IPFS Nodes + a tiny campus relay:**
    * Files are shared browser-to-browser over WebRTC, with no backend involved. Browsers can't use mDNS or accept incoming connections, so a small libp2p relay on the LAN acts as the meeting point (signalling + peer discovery only). It works without internet as long as the relay is reachable.

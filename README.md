@@ -64,10 +64,10 @@ Students face three critical problems:
 - Filter notes by subject, paginate results
 
 ### 🤖 AI Layer — Summarize & Q&A (Phase 3)
-- **One-click summary** of PDF, DOCX and TXT documents using DistilBART
-- **Ask questions** about a document in natural language
-- Answers are **extractive**: the model quotes a passage from the document rather than generating text
-- Confidence score on every answer
+- **RAG pipeline**: each document is split into section-aware chunks and embedded once (keyed by its IPFS CID), then reused by every summary and question
+- **Ask questions** in natural language: hybrid retrieval (BM25 + embeddings, merged with reciprocal rank fusion) finds the relevant passages and an LLM answers from them only, with **numbered citations**
+- **One-call summaries**: short documents are sent whole; long ones send the most representative chunks (MMR over the chunk vectors) instead of a slow map-reduce
+- **Any LLM via API keys**: a three-slot fallback chain over OpenAI-compatible APIs (Groq by default; Gemini, OpenRouter, Ollama work too)
 - Summaries are **cached** in MongoDB, so each document is summarized once
 
 ### ⚡ Semantic Search (Phase 4)
@@ -140,10 +140,10 @@ Students face three critical problems:
 | File Storage | Pinata (IPFS cloud) | Decentralized, permanent file storage |
 | Backend | Node.js + Express | REST API, business logic |
 | Database | MongoDB Atlas + Mongoose | Metadata, search, summary cache |
-| AI Engine | Python FastAPI | Summarization, Q&A, embeddings |
-| Summarization | distilbart-cnn-6-6 | Document summarization (BART family) |
-| Q&A | minilm-uncased-squad2 | Extractive question answering |
-| Embeddings | all-MiniLM-L6-v2 | 384-dim semantic vectors |
+| AI Engine | Python FastAPI | RAG summaries, Q&A, embeddings |
+| LLM | Any OpenAI-compatible API (Groq by default) | Summaries and cited answers, 3-slot fallback |
+| Retrieval | BM25 + vectors, reciprocal rank fusion | Finds the passages an answer is built from |
+| Embeddings | all-MiniLM-L6-v2 (int8 ONNX, onnxruntime) | 384-dim vectors, no PyTorch |
 | Vector Search | MongoDB Atlas `$vectorSearch` | Cosine similarity search |
 | PDF Extract | pdfplumber | Pure Python, no C++ compilation |
 | P2P | Helia + libp2p + WebRTC | Browser-native IPFS mesh |
@@ -330,7 +330,7 @@ POST   /api/v1/notes/:id/embed        🔒 Add to semantic search index
 
 **Ask question request:**
 ```json
-{ "question": "What is the second law of thermodynamics?" }
+{ "question": "What does the first law of thermodynamics say?" }
 ```
 
 **Ask question response:**
@@ -338,10 +338,11 @@ POST   /api/v1/notes/:id/embed        🔒 Add to semantic search index
 {
   "success": true,
   "data": {
-    "answer": "Energy cannot be created or destroyed...",
-    "confidence": 0.87,
+    "answer": "Energy is conserved: it can change form but not be created or destroyed [1].",
+    "confidence": 0.71,
     "confident": true,
-    "chunks_searched": 3
+    "chunks_searched": 42,
+    "sources": [{ "n": 1, "section": "2 The First Law", "excerpt": "The first law states..." }]
   }
 }
 ```
@@ -430,11 +431,15 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-frontend.vercel.app
 
 ### AI Engine (`ai-engine/.env`)
 ```env
-SUMMARIZATION_MODEL=sshleifer/distilbart-cnn-6-6
-QA_MODEL=deepset/minilm-uncased-squad2
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-SUMMARY_MAX_LENGTH=200
-SUMMARY_MIN_LENGTH=50
+LLM_1_BASE_URL=https://api.groq.com/openai/v1
+LLM_1_MODEL=openai/gpt-oss-120b
+LLM_1_API_KEY=                 # your Groq key (or any OpenAI-compatible provider's)
+LLM_2_BASE_URL=https://api.groq.com/openai/v1
+LLM_2_MODEL=qwen/qwen3.8-27b
+LLM_2_API_KEY=none             # "none" turns a slot off
+LLM_3_BASE_URL=https://api.groq.com/openai/v1
+LLM_3_MODEL=openai/gpt-oss-20b
+LLM_3_API_KEY=none
 IPFS_GATEWAY=https://gateway.pinata.cloud
 MONGO_URI=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/?retryWrites=true&w=majority
 MONGO_DB_NAME=shadow-network

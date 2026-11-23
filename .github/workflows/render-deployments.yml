@@ -71,7 +71,7 @@ jobs:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: ai-engine/requirements-dev.txt
-      # Tests stub the ML models, so torch/transformers aren't needed here
+      # Tests stub the embedding model and the LLM: no download, no API key
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q tests
 

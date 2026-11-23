@@ -99,11 +99,11 @@ STEP 4 — RENDER (Backend + AI Engine)
     PYTHON_VERSION = 3.11.8 — torch 2.2 has no wheels for newer Pythons.)
 
 4. Environment Variables → Add these one by one:
-   SUMMARIZATION_MODEL   = sshleifer/distilbart-cnn-6-6
-   QA_MODEL              = deepset/minilm-uncased-squad2
-   EMBEDDING_MODEL       = sentence-transformers/all-MiniLM-L6-v2
-   SUMMARY_MAX_LENGTH    = 200
-   SUMMARY_MIN_LENGTH    = 50
+   LLM_1_BASE_URL        = https://api.groq.com/openai/v1
+   LLM_1_MODEL           = openai/gpt-oss-120b
+   LLM_1_API_KEY         = (your Groq API key: console.groq.com → API Keys)
+   LLM_2_BASE_URL / LLM_2_MODEL / LLM_2_API_KEY   (optional fallback;
+   LLM_3_BASE_URL / LLM_3_MODEL / LLM_3_API_KEY    key "none" = off)
    IPFS_GATEWAY          = https://gateway.pinata.cloud
    MONGO_URI             = mongodb+srv://...  (from Step 2)
    MONGO_DB_NAME         = shadow-network
@@ -115,8 +115,10 @@ STEP 4 — RENDER (Backend + AI Engine)
    https://shadow-network-ai-xxxx.onrender.com
    SAVE THIS URL.
 
-⚠️  NOTE on RAM: the full-size facebook/bart-large-cnn + deepset/roberta-base-squad2
-    need ~2GB RAM and won't fit the free tier's 512MB. Use them only on a paid instance.
+NOTE: generation runs on the LLM provider, so the engine itself only runs the
+    int8 embedding model (~250 MB peak), well inside the free tier's 512 MB.
+    Build Command for a service created by hand:
+      pip install -r requirements.txt && python -c "import embeddings; embeddings.ensure_model_files()"
 
 ──── 4B. Deploy the Backend ────────────────────────────────────────────
 
