@@ -1,4 +1,3 @@
-// src/App.jsx
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { P2PProvider } from './context/P2PContext';
@@ -13,10 +12,15 @@ import Health      from './pages/Health';
 import Login       from './pages/Login';
 import './styles/global.css';
 
-const RequireAuth = ({ children }) => {
+const RequireAuth = ({ children, allowP2P = false }) => {
   const { isAuthenticated } = useAuth();
   const location = useLocation();
-  if (!isAuthenticated) return <Navigate to="/login" state={{ from: location }} replace />;
+  // P2P-only uploads never touch the backend, so they must work without a
+  // login (and without internet). Upload itself restricts the server option.
+  const p2pEnabled = import.meta.env.VITE_P2P_MODE === 'true';
+  if (!isAuthenticated && !(allowP2P && p2pEnabled)) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
   return children;
 };
 
@@ -30,7 +34,7 @@ const App = () => (
             <Routes>
               <Route path="/"         element={<Browse />} />
               <Route path="/login"    element={<Login />} />
-              <Route path="/upload"   element={<RequireAuth><Upload /></RequireAuth>} />
+              <Route path="/upload"   element={<RequireAuth allowP2P><Upload /></RequireAuth>} />
               <Route path="/search"   element={<Search />} />
               <Route path="/note/:id" element={<NoteDetail />} />
               <Route path="/peers"    element={<Peers />} />
@@ -44,7 +48,7 @@ const App = () => (
             </Routes>
           </main>
           <footer style={{ textAlign: 'center', padding: '16px', fontSize: 12, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>
-            Shadow Network · Decentralized Academic Sharing · Phases 1–5
+            Shadow Network · Decentralized Academic Sharing
           </footer>
         </div>
       </P2PProvider>

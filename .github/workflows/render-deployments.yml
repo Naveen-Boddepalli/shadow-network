@@ -5,11 +5,16 @@ on:
     branches:
       - main
     paths:
-      # Only run this entire workflow if files in these paths change
       - 'backend/**'
       - 'ai-engine/**'
       - '.github/workflows/render-deployments.yml'
       - 'render.yaml'
+  # Run the tests on pull requests too; deploys only happen on pushes to main.
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'ai-engine/**'
+      - '.github/workflows/render-deployments.yml'
 
 jobs:
   changes:
@@ -33,11 +38,48 @@ jobs:
               - '.github/workflows/render-deployments.yml'
               - 'render.yaml'
 
+  test-backend:
+    name: Test Backend
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  test-ai-engine:
+    name: Test AI Engine
+    needs: changes
+    if: ${{ needs.changes.outputs.ai_engine == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ai-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: ai-engine/requirements-dev.txt
+      # Tests stub the embedding model and the LLM: no download, no API key
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q tests
+
   deploy-backend:
     name: Deploy Backend
-    needs: changes
-    # Only run if backend files changed
-    if: ${{ needs.changes.outputs.backend == 'true' }}
+    needs: test-backend
+    # Skipped automatically when backend tests were skipped or failed
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
       deployments: write
@@ -55,9 +97,10 @@ jobs:
 
   deploy-ai-engine:
     name: Deploy AI Engine
-    needs: [changes, deploy-backend]
-    # Only run if AI files changed, AND wait for backend to finish (if it was triggered)
-    if: ${{ always() && needs.changes.outputs.ai_engine == 'true' && (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped') }}
+    needs: [test-ai-engine, deploy-backend]
+    # Only needs passing AI tests. It runs after the backend deploy so the two
+    # free-tier builds don't overlap, but a failed backend deploy doesn't block it.
+    if: ${{ always() && github.event_name == 'push' && needs.test-ai-engine.result == 'success' && needs.deploy-backend.result != 'cancelled' }}
     runs-on: ubuntu-latest
     permissions:
       deployments: write

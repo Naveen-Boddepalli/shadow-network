@@ -2,8 +2,8 @@
 import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { uploadFile } from '../services/api';
-import { uploadToHelia } from '../services/p2p';
 import { useP2P } from '../context/P2PContext';
+import { useAuth } from '../context/AuthContext';
 
 const ACCEPTED = '.pdf,.doc,.docx,.txt,.png,.jpg,.jpeg,.zip';
 
@@ -11,6 +11,7 @@ const Upload = () => {
   const navigate  = useNavigate();
   const fileRef   = useRef(null);
   const { p2pEnabled, initialized: p2pReady } = useP2P();
+  const { isAuthenticated } = useAuth();
 
   const [form, setForm]         = useState({ title: '', subject: '', tags: '', uploadedBy: '' });
   const [file, setFile]         = useState(null);
@@ -18,7 +19,8 @@ const Upload = () => {
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState('');
   const [result, setResult]     = useState(null);
-  const [mode, setMode]         = useState('server');  // 'server' | 'p2p'
+  // Without a login only P2P upload is possible (the route lets us in for that).
+  const [mode, setMode]         = useState(isAuthenticated ? 'server' : 'p2p');  // 'server' | 'p2p'
 
   const set = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
 
@@ -36,8 +38,10 @@ const Upload = () => {
     setError(''); setLoading(true); setProgress(0); setResult(null);
 
     try {
-      if (mode === 'p2p' && p2pEnabled && p2pReady) {
+      if (mode === 'p2p') {
+        if (!p2pEnabled || !p2pReady) throw new Error('P2P node is not running yet — wait a moment and try again.');
         // ── P2P mode: upload directly to Helia (no server) ──
+        const { uploadToHelia } = await import('../services/p2p');
         const cid = await uploadToHelia(file);
         setResult({ cid, p2p: true, title: form.title });
       } else {
@@ -99,10 +103,14 @@ const Upload = () => {
       <div className="card" style={{ padding: '14px 20px', marginBottom: 20 }}>
         <div className="flex items-center gap-16">
           <span className="text-sm" style={{ fontWeight: 500, color: 'var(--text-secondary)' }}>Storage mode:</span>
-          <label className="flex items-center gap-8" style={{ cursor: 'pointer' }}>
+          <label className="flex items-center gap-8" style={{
+            cursor: isAuthenticated ? 'pointer' : 'not-allowed',
+            opacity: isAuthenticated ? 1 : 0.4,
+          }}>
             <input type="radio" name="mode" value="server" checked={mode === 'server'}
-              onChange={() => setMode('server')} />
+              onChange={() => setMode('server')} disabled={!isAuthenticated} />
             <span className="text-sm">Server + IPFS</span>
+            {!isAuthenticated && <span className="badge badge-gray" style={{ fontSize: 10 }}>Log in to use</span>}
           </label>
           <label className="flex items-center gap-8" style={{
             cursor: p2pEnabled ? 'pointer' : 'not-allowed',
@@ -111,7 +119,7 @@ const Upload = () => {
             <input type="radio" name="mode" value="p2p" checked={mode === 'p2p'}
               onChange={() => setMode('p2p')} disabled={!p2pEnabled} />
             <span className="text-sm">P2P only (Helia)</span>
-            {!p2pEnabled && <span className="badge badge-gray" style={{ fontSize: 10 }}>Set REACT_APP_P2P_MODE=true</span>}
+            {!p2pEnabled && <span className="badge badge-gray" style={{ fontSize: 10 }}>Set VITE_P2P_MODE=true</span>}
           </label>
         </div>
         {mode === 'p2p' && p2pEnabled && !p2pReady && (

@@ -1,4 +1,3 @@
-// src/pages/Search.jsx
 import React, { useState } from 'react';
 import { searchNotes, semanticSearch } from '../services/api';
 import NoteCard from '../components/NoteCard';

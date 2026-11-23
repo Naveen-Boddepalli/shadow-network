@@ -1,20 +1,19 @@
-// src/pages/Browse.jsx
 import React, { useState } from 'react';
 import { useNotes } from '../hooks/useNotes';
 import NoteCard from '../components/NoteCard';
+import { useAuth } from '../context/AuthContext';
 
 const Browse = () => {
   const [subject, setSubject] = useState('');
   const [page, setPage]       = useState(1);
-  const [filter, setFilter]   = useState({});
+  const [filter, setFilter]   = useState('');
+  const { isAuthenticated }   = useAuth();
 
-  const { notes, loading, error, pagination, refetch, remove } = useNotes(
-    { ...filter, page, limit: 12 }
-  );
+  const { notes, loading, error, pagination, remove } = useNotes({ subject: filter, page, limit: 12 });
 
   const applyFilter = (e) => {
     e.preventDefault();
-    setFilter(subject ? { subject } : {});
+    setFilter(subject.trim());
     setPage(1);
   };
 
@@ -36,9 +35,9 @@ const Browse = () => {
           onChange={(e) => setSubject(e.target.value)}
         />
         <button type="submit" className="btn btn-primary btn-sm">Filter</button>
-        {filter.subject && (
+        {filter && (
           <button type="button" className="btn btn-ghost btn-sm"
-            onClick={() => { setFilter({}); setSubject(''); setPage(1); }}
+            onClick={() => { setFilter(''); setSubject(''); setPage(1); }}
           >Clear</button>
         )}
       </form>
@@ -57,14 +56,14 @@ const Browse = () => {
         <div className="empty-state">
           <div className="empty-state-icon">📚</div>
           <h3>No notes found</h3>
-          <p>Upload your first document to get started.</p>
+          <p>{filter ? `Nothing filed under "${filter}" yet.` : 'Upload your first document to get started.'}</p>
         </div>
       )}
 
       {/* Notes grid */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {notes.map((note) => (
-          <NoteCard key={note.id} note={note} onDelete={remove} />
+          <NoteCard key={note.id} note={note} onDelete={isAuthenticated ? remove : undefined} />
         ))}
       </div>
 
