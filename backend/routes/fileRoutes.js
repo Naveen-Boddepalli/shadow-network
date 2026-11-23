@@ -1,22 +1,21 @@
-// routes/fileRoutes.js
-// All routes related to IPFS file operations.
-
-const express = require('express');
-const router  = express.Router();
-const upload  = require('../middleware/upload');
-const { uploadFile, downloadFile } = require('../controllers/fileController');
-const { requireAuth }              = require('../middleware/auth');
-const { validateUpload, handleValidation } = require('../middleware/validators');
+const express   = require('express');
 const rateLimit = require('express-rate-limit');
+const upload    = require('../middleware/upload');
+const { uploadFile, downloadFile } = require('../controllers/fileController');
+const { requireAuth } = require('../middleware/auth');
+const { validateUpload, handleValidation } = require('../middleware/validators');
+
+const router = express.Router();
 
 const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 15,
-  message: { success: false, error: 'Too many upload requests, please try again later.' }
+  limit: 15,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many upload requests, please try again later.' },
 });
 
-// POST /upload  ← PROTECTED: requires valid JWT
-// multipart/form-data: file + title + subject + tags
+// multipart/form-data: file, title, subject, tags?, uploadedBy?
 router.post(
   '/upload',
   requireAuth,
@@ -27,7 +26,7 @@ router.post(
   uploadFile
 );
 
-// GET /download/:cid  ← PUBLIC: anyone can download by CID
+// Public: anyone with the CID can download.
 router.get('/download/:cid', downloadFile);
 
 module.exports = router;

@@ -1,102 +1,67 @@
-// backend/controllers/semanticController.js  —  Phase 4
-// GET /api/v1/semantic-search?q=...
-// POST /api/v1/notes/:id/embed   (manual re-embed trigger)
+// GET /semantic-search?q=&k=   POST /notes/:id/embed
 
 const Note = require('../models/Note');
-const { semanticSearch, embedDocument, removeEmbedding } = require('../services/aiService');
+const { semanticSearch, embedDocument } = require('../services/aiService');
 
-/**
- * GET /api/v1/semantic-search?q=query&k=10
- *
- * How it works:
- * 1. Send query to Python AI engine → embed query with sentence-transformers
- * 2. FAISS finds k nearest document vectors (cosine similarity)
- * 3. Returns note_ids + scores
- * 4. We fetch full Note objects from MongoDB by those IDs
- * 5. Return enriched results to client
- *
- * Example:
- *   GET /api/v1/semantic-search?q=laws+of+motion
- *   Finds notes about Newton, dynamics, F=ma, kinematics — even if those
- *   exact words aren't in the query.
- */
+// The AI engine embeds the query and runs Atlas $vectorSearch, returning ranked
+// note IDs. We hydrate those from MongoDB, keeping the engine's ranking.
 const semanticSearchNotes = async (req, res, next) => {
   try {
-    const { q, k = '10' } = req.query;
+    const q = req.query.q;
+    const k = req.query.k || 10;
 
-    if (!q || q.trim().length < 2) {
-      return res.status(400).json({
-        success: false,
-        error: 'Query param "q" is required (min 2 characters)',
-      });
-    }
-
-    const kNum = Math.min(50, Math.max(1, parseInt(k) || 10));
-
-    // ── 1. Ask AI engine for ranked note_ids ───────────────────
-    const aiResult = await semanticSearch(q.trim(), kNum);
+    const aiResult = await semanticSearch(q, k);
 
     if (aiResult.total_indexed === 0) {
       return res.json({
         success: true,
-        query: q.trim(),
+        query: q,
         count: 0,
+        total_indexed: 0,
         data: [],
-        message: 'No documents have been semantically indexed yet. Upload files first.',
+        message: 'No documents have been semantically indexed yet.',
       });
     }
 
-    // ── 2. Fetch full Note objects from MongoDB ────────────────
-    const noteIds = aiResult.results.map((r) => r.note_id);
-    const notes   = await Note.find({ _id: { $in: noteIds } });
+    const notes   = await Note.find({ _id: { $in: aiResult.results.map((r) => r.note_id) } });
+    const noteMap = new Map(notes.map((n) => [n._id.toString(), n]));
 
-    // ── 3. Merge score + rank into each Note ──────────────────
-    // We need to preserve the ranking from FAISS, not MongoDB's order
-    const noteMap = Object.fromEntries(notes.map((n) => [n._id.toString(), n]));
-
-    const enrichedResults = aiResult.results
-      .filter((r) => noteMap[r.note_id])  // Skip any note_ids not in MongoDB
+    const data = aiResult.results
+      .filter((r) => noteMap.has(r.note_id)) // embedding may outlive a deleted note
       .map((r) => ({
-        ...noteMap[r.note_id].toPublic(),
-        semanticScore: r.score,   // Cosine similarity 0.0–1.0 (higher = more relevant)
+        ...noteMap.get(r.note_id).toPublic(),
+        semanticScore: r.score,
         rank: r.rank,
       }));
 
     res.json({
       success: true,
-      query:          q.trim(),
-      count:          enrichedResults.length,
-      total_indexed:  aiResult.total_indexed,
-      data:           enrichedResults,
+      query: q,
+      count: data.length,
+      total_indexed: aiResult.total_indexed,
+      data,
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * POST /api/v1/notes/:id/embed
- * Manually trigger embedding for a note.
- * Useful if AI engine was down during upload, or for re-indexing.
- */
+// Manually (re)index a note, e.g. when the AI engine was down at upload time.
 const embedNote = async (req, res, next) => {
   try {
     const note = await Note.findById(req.params.id);
-    if (!note) {
-      return res.status(404).json({ success: false, error: 'Note not found' });
-    }
+    if (!note) return res.status(404).json({ success: false, error: 'Note not found' });
 
     const result = await embedDocument(note.cid, note._id.toString(), note.mimeType);
 
-    // Update flag in MongoDB
     note.embeddingIndexed = true;
     await note.save();
 
     res.json({
       success: true,
-      message: result.indexed
-        ? 'Document embedded and added to semantic search index.'
-        : `Document was already indexed (position ${result.faiss_position}).`,
+      message: result.reason === 'updated_existing'
+        ? 'Existing embedding refreshed.'
+        : 'Document added to the semantic search index.',
       data: result,
     });
   } catch (error) {

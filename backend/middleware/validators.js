@@ -1,111 +1,101 @@
-// middleware/validators.js
-// Reusable express-validator chains for every route that accepts user input.
-// Usage: router.post('/path', validateXxx, handleValidation, controller)
+// express-validator chains. Usage: router.post('/path', validateXxx, handleValidation, controller)
+//
+// Values are trimmed and length-checked but not HTML-escaped: they're stored as
+// plain text and React escapes them on render. Escaping here would store "&amp;"
+// in the database and show it literally in the UI.
 
-const { body, query, validationResult } = require('express-validator');
+const { body, query, param, validationResult } = require('express-validator');
 
-// ── Shared error formatter ─────────────────────────────────────────────────
-
-/**
- * Call after any validateXxx chain.
- * If there are validation errors, responds 400 with a structured error list
- * and halts the request. Otherwise passes through to the controller.
- */
 const handleValidation = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
+    const list = errors.array().map((e) => ({ field: e.path, message: e.msg }));
     return res.status(400).json({
       success: false,
-      error: 'Validation failed',
-      errors: errors.array().map((e) => ({ field: e.path, message: e.msg })),
+      error: list.map((e) => e.message).join('; '),
+      errors: list,
     });
   }
   next();
 };
 
-// ── Upload: POST /upload ───────────────────────────────────────────────────
-// Fields: title (required), subject (required), tags (optional), uploadedBy (optional)
+const validateNoteId = [
+  param('id').isMongoId().withMessage('Invalid note ID'),
+];
 
+// POST /upload — multipart fields: title, subject, tags?, uploadedBy?
 const validateUpload = [
   body('title')
+    .isString().withMessage('title is required')
     .trim()
-    .notEmpty().withMessage('title is required')
-    .isLength({ min: 1, max: 200 }).withMessage('title must be 1–200 characters')
-    .escape(), // strip HTML entities to prevent XSS
+    .isLength({ min: 1, max: 200 }).withMessage('title must be 1–200 characters'),
 
   body('subject')
+    .isString().withMessage('subject is required')
     .trim()
-    .notEmpty().withMessage('subject is required')
-    .isLength({ min: 1, max: 100 }).withMessage('subject must be 1–100 characters')
-    .escape(),
+    .isLength({ min: 1, max: 100 }).withMessage('subject must be 1–100 characters'),
 
   body('tags')
     .optional()
     .isString().withMessage('tags must be a comma-separated string')
     .custom((value) => {
       const parts = value.split(',').map((t) => t.trim()).filter(Boolean);
-      if (parts.some((t) => t.length > 50)) {
-        throw new Error('Each tag must be ≤ 50 characters');
-      }
-      if (parts.length > 20) {
-        throw new Error('Maximum 20 tags allowed');
-      }
+      if (parts.length > 20) throw new Error('Maximum 20 tags allowed');
+      if (parts.some((t) => t.length > 50)) throw new Error('Each tag must be at most 50 characters');
       return true;
     }),
 
   body('uploadedBy')
     .optional()
+    .isString()
     .trim()
-    .isLength({ max: 50 }).withMessage('uploadedBy must be ≤ 50 characters')
-    .escape(),
+    .isLength({ max: 50 }).withMessage('uploadedBy must be at most 50 characters'),
 ];
 
-// ── AI Q&A: POST /notes/:id/ask ───────────────────────────────────────────
-// Body: { question }
-
+// POST /notes/:id/ask — body: { question }
 const validateAsk = [
+  ...validateNoteId,
   body('question')
+    .isString().withMessage('question is required')
     .trim()
-    .notEmpty().withMessage('question is required')
     .isLength({ min: 5, max: 500 }).withMessage('question must be 5–500 characters'),
-  // Note: we do NOT escape questions because they are passed to the AI engine as-is.
-  // The AI engine never renders them as HTML so XSS is not a concern here.
 ];
 
-// ── Search: GET /search?q=  and  GET /semantic-search?q= ──────────────────
-// Query param: q
-
+// GET /search?q=&limit=
 const validateSearch = [
   query('q')
+    .isString().withMessage('Query param "q" is required')
     .trim()
-    .notEmpty().withMessage('Query param "q" is required')
     .isLength({ min: 1, max: 200 }).withMessage('q must be 1–200 characters'),
+  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('limit must be 1–50').toInt(),
 ];
 
-// ── Note list: GET /notes?subject= ────────────────────────────────────────
+// GET /semantic-search?q=&k=
+const validateSemanticSearch = [
+  query('q')
+    .isString().withMessage('Query param "q" is required')
+    .trim()
+    .isLength({ min: 2, max: 200 }).withMessage('q must be 2–200 characters'),
+  query('k').optional().isInt({ min: 1, max: 50 }).withMessage('k must be 1–50').toInt(),
+];
 
+// GET /notes?subject=&page=&limit=
 const validateNoteList = [
   query('subject')
     .optional()
+    .isString()
     .trim()
-    .isLength({ max: 100 }).withMessage('subject filter must be ≤ 100 characters')
-    .escape(),
-
-  query('page')
-    .optional()
-    .isInt({ min: 1 }).withMessage('page must be a positive integer')
-    .toInt(),
-
-  query('limit')
-    .optional()
-    .isInt({ min: 1, max: 100 }).withMessage('limit must be 1–100')
-    .toInt(),
+    .isLength({ max: 100 }).withMessage('subject filter must be at most 100 characters'),
+  query('page').optional().isInt({ min: 1 }).withMessage('page must be a positive integer').toInt(),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('limit must be 1–100').toInt(),
 ];
 
 module.exports = {
+  validateNoteId,
   validateUpload,
   validateAsk,
   validateSearch,
+  validateSemanticSearch,
   validateNoteList,
   handleValidation,
 };

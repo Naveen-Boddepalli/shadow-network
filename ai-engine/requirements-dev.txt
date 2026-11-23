@@ -1,0 +1,4 @@
+# The full runtime set (it's small now) plus pytest. Tests stub the embedding
+# model and the LLM, so nothing is downloaded and no API key is needed.
+-r requirements.txt
+pytest==8.0.0

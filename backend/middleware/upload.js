@@ -1,38 +1,28 @@
-// middleware/upload.js
-// Configures multer to accept files in memory (as Buffer).
-// We don't save to disk — we pass the buffer straight to IPFS.
+// Multer config: files are kept in memory (req.file.buffer) and passed straight to IPFS.
 
 const multer = require('multer');
+const { httpError } = require('../utils/httpError');
 
-// memoryStorage keeps the file in RAM as req.file.buffer
-// This is perfect for IPFS upload — no temp files on disk
-const storage = multer.memoryStorage();
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 
-// File filter — accept common academic file types
+const ALLOWED_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+  'image/jpeg',
+  'image/png',
+  'application/zip',
+  'application/x-zip-compressed', // what Windows browsers report for .zip
+]);
+
 const fileFilter = (req, file, cb) => {
-  const allowedMimeTypes = [
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'text/plain',
-    'image/jpeg',
-    'image/png',
-    'application/zip',
-  ];
-
-  if (allowedMimeTypes.includes(file.mimetype)) {
-    cb(null, true); // Accept file
-  } else {
-    cb(new Error(`File type not allowed: ${file.mimetype}`), false);
-  }
+  if (ALLOWED_MIME_TYPES.has(file.mimetype)) return cb(null, true);
+  cb(httpError(400, `File type not allowed: ${file.mimetype || 'unknown'}`));
 };
 
-const upload = multer({
-  storage,
+module.exports = multer({
+  storage: multer.memoryStorage(),
   fileFilter,
-  limits: {
-    fileSize: 50 * 1024 * 1024, // 50 MB max
-  },
+  limits: { fileSize: MAX_FILE_SIZE, files: 1 },
 });
-
-module.exports = upload;

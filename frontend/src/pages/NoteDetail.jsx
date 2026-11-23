@@ -1,18 +1,26 @@
-// src/pages/NoteDetail.jsx
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { getNoteById, summarizeNote, askQuestion, clearSummaryCache,
          embedNote, getDownloadUrl } from '../services/api';
+import { useAuth } from '../context/AuthContext';
+
+// File types the AI engine can extract text from
+const TEXT_TYPES = new Set([
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+]);
 
 const NoteDetail = () => {
   const { id }     = useParams();
   const navigate   = useNavigate();
   const chatEndRef = useRef(null);
+  const { isAuthenticated } = useAuth();
 
   const [note, setNote]         = useState(null);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState('');
-  const [tab, setTab]           = useState('info');  // 'info' | 'summary' | 'chat'
+  const [tab, setTab]           = useState('summary');  // 'summary' | 'chat'
 
   // Summary state
   const [summary, setSummary]         = useState(null);
@@ -27,18 +35,14 @@ const NoteDetail = () => {
   // Embed state
   const [embedding, setEmbedding] = useState(false);
 
-  // Load note
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await getNoteById(id);
-        setNote(res.data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    })();
+    let cancelled = false;
+    setLoading(true); setError(''); setSummary(null); setMessages([]);
+    getNoteById(id)
+      .then((res) => { if (!cancelled) setNote(res.data); })
+      .catch((err) => { if (!cancelled) setError(err.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [id]);
 
   useEffect(() => {
@@ -46,12 +50,12 @@ const NoteDetail = () => {
   }, [messages]);
 
   const handleSummarize = async (force = false) => {
-    if (force) {
-      await clearSummaryCache(id);
-      setSummary(null);
-    }
     setSummaryLoading(true); setSummaryError('');
     try {
+      if (force) {
+        await clearSummaryCache(id);
+        setSummary(null);
+      }
       const res = await summarizeNote(id);
       setSummary(res.data);
       setNote((n) => ({ ...n, hasSummary: true }));
@@ -77,6 +81,7 @@ const NoteDetail = () => {
         text: d.answer,
         confidence: d.confidence,
         confident: d.confident,
+        sources: d.sources || [],
         warning: d.warning,
       }]);
     } catch (err) {
@@ -91,9 +96,8 @@ const NoteDetail = () => {
     try {
       await embedNote(id);
       setNote((n) => ({ ...n, embeddingIndexed: true }));
-      alert('✅ Document embedded! It now appears in semantic search.');
     } catch (err) {
-      alert('❌ ' + err.message);
+      alert(`Indexing failed: ${err.message}`);
     } finally {
       setEmbedding(false);
     }
@@ -111,6 +115,8 @@ const NoteDetail = () => {
       <button className="btn btn-secondary" onClick={() => navigate('/')}>← Back</button>
     </div>
   );
+
+  const aiSupported = TEXT_TYPES.has(note.mimeType);
 
   const fileSize = note?.fileSize
     ? note.fileSize > 1_048_576 ? `${(note.fileSize / 1_048_576).toFixed(1)} MB`
@@ -145,7 +151,7 @@ const NoteDetail = () => {
         <div className="flex items-center gap-8 flex-wrap">
           {note.hasSummary      && <span className="badge badge-green">✓ AI Summary cached</span>}
           {note.embeddingIndexed && <span className="badge badge-purple">⚡ Semantically indexed</span>}
-          {!note.embeddingIndexed && (
+          {!note.embeddingIndexed && aiSupported && isAuthenticated && (
             <button className="btn btn-ghost btn-sm" onClick={handleEmbed} disabled={embedding}>
               {embedding ? 'Indexing…' : '⚡ Add to semantic search'}
             </button>
@@ -157,8 +163,22 @@ const NoteDetail = () => {
         </div>
       </div>
 
+      {!aiSupported && (
+        <div className="alert alert-info">
+          AI summaries and Q&amp;A are available for PDF, DOCX and TXT files.
+        </div>
+      )}
+
+      {aiSupported && !isAuthenticated && (
+        <div className="alert alert-info">
+          <Link to="/login" state={{ from: { pathname: `/note/${id}` } }}>Log in</Link> to summarize
+          this document or ask questions about it.
+        </div>
+      )}
+
+      {aiSupported && isAuthenticated && (<>
       {/* Tabs */}
-      <div className="flex gap-4" style={{ marginBottom: 16 }}>
+      <div className="flex gap-8" style={{ marginBottom: 16 }}>
         {[
           { id: 'summary', label: '🤖 AI Summary' },
           { id: 'chat',    label: '💬 Ask AI' },
@@ -181,7 +201,7 @@ const NoteDetail = () => {
           <div className="flex justify-between items-center" style={{ marginBottom: 16 }}>
             <h2 className="section-title" style={{ margin: 0 }}>AI Summary</h2>
             <div className="flex gap-8">
-              {note.hasSummary && !summary && (
+              {summary && (
                 <button className="btn btn-ghost btn-sm"
                   onClick={() => handleSummarize(true)}
                   disabled={summaryLoading}>Regenerate</button>
@@ -195,7 +215,7 @@ const NoteDetail = () => {
               <p className="text-secondary" style={{ marginBottom: 20 }}>
                 {note.hasSummary
                   ? 'A cached summary exists. Click below to load it.'
-                  : 'Summarize this document using BART. Takes ~20s on first run.'}
+                  : 'Generate a short summary of this document. The first run also indexes it, so it can take a little longer.'}
               </p>
               <button className="btn btn-primary" onClick={() => handleSummarize(false)}>
                 {note.hasSummary ? 'Load Summary' : 'Summarize Document'}
@@ -208,7 +228,7 @@ const NoteDetail = () => {
               <div className="spinner spinner-lg" />
               <div>
                 <div style={{ fontWeight: 500 }}>Generating summary…</div>
-                <div className="text-sm text-muted">First run downloads the BART model (~1 GB). Subsequent runs are fast.</div>
+                <div className="text-sm text-muted">A document's first request also indexes it and is slower.</div>
               </div>
             </div>
           )}
@@ -220,11 +240,14 @@ const NoteDetail = () => {
               <div style={{
                 background: 'var(--primary-light)', borderRadius: 'var(--radius)',
                 padding: '16px 20px', marginBottom: 16, lineHeight: 1.8, fontSize: 15,
+                whiteSpace: 'pre-wrap',
               }}>
                 {summary.summary}
               </div>
               <div className="flex gap-16 text-sm text-muted">
-                <span>📖 Original: ~{summary.word_count_original?.toLocaleString()} words</span>
+                {summary.word_count_original != null && (
+                  <span>📖 Original: ~{summary.word_count_original.toLocaleString()} words</span>
+                )}
                 <span>📝 Summary: ~{summary.word_count_summary?.toLocaleString()} words</span>
                 {summary.cached && <span className="badge badge-gray">Cached</span>}
               </div>
@@ -238,7 +261,7 @@ const NoteDetail = () => {
         <div className="card" style={{ display: 'flex', flexDirection: 'column', height: 480 }}>
           <h2 className="section-title">Ask about this document</h2>
           <p className="text-sm text-muted" style={{ marginBottom: 16 }}>
-            Extractive Q&A — answers are pulled directly from the document text (no hallucination).
+            Answers are written from the most relevant passages of this document, with numbered citations to them.
           </p>
 
           {/* Messages */}
@@ -263,14 +286,23 @@ const NoteDetail = () => {
                              : 'var(--bg)',
                   color: msg.role === 'user' ? '#fff' : msg.role === 'error' ? '#991b1b' : 'var(--text-primary)',
                   border: msg.role !== 'user' ? '1px solid var(--border)' : 'none',
-                  fontSize: 14, lineHeight: 1.6,
+                  fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap',
                 }}>
                   {msg.text}
                 </div>
+                {msg.role === 'assistant' && msg.sources?.length > 0 && (
+                  <div className="text-sm text-muted mt-8" style={{ paddingLeft: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {msg.sources.map((s) => (
+                      <div key={s.n} title={s.excerpt}>
+                        <strong>[{s.n}]</strong> {s.section || 'Untitled section'}: “{s.excerpt.slice(0, 90)}…”
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {msg.role === 'assistant' && (
                   <div className="flex items-center gap-8 mt-8" style={{ paddingLeft: 4 }}>
                     <span className={`badge ${msg.confident ? 'badge-green' : 'badge-yellow'}`}>
-                      {Math.round(msg.confidence * 100)}% confidence
+                      {msg.confident ? 'From this document' : 'Not found in document'}
                     </span>
                     {msg.warning && <span className="text-sm text-muted">{msg.warning}</span>}
                   </div>
@@ -297,6 +329,7 @@ const NoteDetail = () => {
           </form>
         </div>
       )}
+      </>)}
     </div>
   );
 };

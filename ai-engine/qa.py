@@ -1,122 +1,96 @@
-# ai-engine/qa.py
-# Answers questions about a document using deepset/roberta-base-squad2.
-# This is EXTRACTIVE Q&A: the model finds the answer span within the text.
-# It does NOT hallucinate — if the answer isn't in the doc, it says so.
+# Retrieval-augmented question answering over one document.
+#
+# Hybrid search (BM25 + embeddings, fused by rank) picks the few chunks that
+# matter, and the LLM answers from those numbered excerpts only, citing them as
+# [1], [2]. A question therefore costs one small embedding and one LLM call with
+# ~2k tokens of context, however long the document is.
 
-import os
-from transformers import pipeline
-from extractor import chunk_text
+import re
 
-# ── Model config ───────────────────────────────────────────────
-MODEL_NAME = os.getenv("QA_MODEL", "deepset/roberta-base-squad2")
+import embeddings
+import llm
+import retrieval
+from doc_index import DocIndex
 
-# Confidence threshold — answers below this score are flagged as uncertain
-CONFIDENCE_THRESHOLD = 0.15
-
-# ── Lazy load ──────────────────────────────────────────────────
-_qa_pipeline = None
-
-
-def get_qa_pipeline():
-    """Returns the QA pipeline, loading it on first call."""
-    global _qa_pipeline
-    if _qa_pipeline is None:
-        print(f"⏳ Loading Q&A model: {MODEL_NAME}...")
-        _qa_pipeline = pipeline(
-            "question-answering",
-            model=MODEL_NAME,
-            device=0 if _cuda_available() else -1,
-        )
-        print("✅ Q&A model loaded")
-    return _qa_pipeline
+TOP_K = 6
+MAX_CONTEXT_CHARS = 9_000
+NO_ANSWER_MARK = "[NO_ANSWER]"
+NO_ANSWER = "I couldn't find an answer to that question in this document."
 
 
-def answer_question(question: str, context_text: str) -> dict:
-    """
-    Answer a question given the document text as context.
-
-    Strategy for long documents:
-    - Split text into overlapping chunks
-    - Run Q&A on each chunk
-    - Return the answer with the highest confidence score
-
-    Returns:
+def build_messages(question: str, excerpts: list[dict], title: str | None) -> list[dict]:
+    context = "\n\n---\n\n".join(
+        f"[{e['n']}] Section: {e['section'] or '(untitled)'}\n{e['text']}" for e in excerpts
+    )
+    doc = f'the document "{title}"' if title else "this document"
+    return [
         {
-            "answer": str,
-            "confidence": float,       # 0.0 to 1.0
-            "confident": bool,         # True if above threshold
-            "context_snippet": str,    # Surrounding text where answer was found
-            "chunks_searched": int
-        }
-    """
-    qa = get_qa_pipeline()
-
-    # ── Short context: single pass ─────────────────────────────
-    if len(context_text) <= 3000:
-        return _run_qa(qa, question, context_text, chunks_searched=1)
-
-    # ── Long context: search all chunks, pick best answer ──────
-    chunks = chunk_text(context_text, max_chars=3000)
-    best_result = None
-
-    for chunk in chunks:
-        result = _run_qa_raw(qa, question, chunk)
-        if best_result is None or result["score"] > best_result["score"]:
-            best_result = result
-
-    return _format_result(best_result, chunks_searched=len(chunks))
+            "role": "system",
+            "content": (
+                f"You are a study assistant answering questions about {doc} for a student.\n\n"
+                "Rules:\n"
+                "- Answer only from the numbered excerpts below. Cite the excerpts you used inline "
+                "as [1], [2] etc.\n"
+                "- Never invent facts, figures, formulas or quotes that are not in the excerpts. You may "
+                "explain a concept the excerpts mention in simpler words.\n"
+                f"- If the excerpts do not contain the answer, reply with {NO_ANSWER_MARK} followed by one "
+                "sentence on what the document does cover that is closest, if anything.\n"
+                "- Be concise: a short paragraph or a few '-' bullets, under 150 words unless the question "
+                "asks for detail. Plain text only: no headings, no tables.\n\n"
+                f"Excerpts:\n\n{context or '(none matched this question)'}"
+            ),
+        },
+        {"role": "user", "content": question},
+    ]
 
 
-def _run_qa(qa, question: str, context: str, chunks_searched: int) -> dict:
-    """Run QA on a single context and return formatted result."""
-    raw = _run_qa_raw(qa, question, context)
-    result = _format_result(raw, chunks_searched=chunks_searched)
-    return result
-
-
-def _run_qa_raw(qa, question: str, context: str) -> dict:
-    """Run the pipeline and return raw output dict."""
-    return qa(
-        question=question,
-        context=context,
-        max_answer_len=150,    # Max chars in the extracted answer span
-        handle_impossible_answer=True,  # Returns "" if no answer found
+def answer_question(question: str, index: DocIndex, title: str | None = None) -> dict:
+    """Returns { answer, confidence, confident, chunks_searched, sources }."""
+    query_vector = embeddings.embed_text(question)
+    positions, best_similarity = retrieval.search(
+        bm25=index.bm25,
+        vectors=index.vectors,
+        query_vector=query_vector,
+        query=question,
+        limit=TOP_K,
     )
 
+    excerpts, used = [], 0
+    for i in positions:
+        chunk = index.chunks[i]
+        if used + len(chunk["text"]) > MAX_CONTEXT_CHARS and excerpts:
+            break
+        used += len(chunk["text"])
+        excerpts.append({"n": len(excerpts) + 1, "section": chunk["section"], "text": chunk["text"]})
 
-def _format_result(raw: dict, chunks_searched: int) -> dict:
-    """
-    Convert raw pipeline output into a clean API response.
-    Handles the case where the model found no answer (empty string).
-    """
-    answer = raw.get("answer", "").strip()
-    score = float(raw.get("score", 0.0))
-
-    # Model signals "no answer" by returning empty string or very low score
-    if not answer or score < 0.01:
+    if not excerpts:
         return {
-            "answer": "I couldn't find a specific answer to that question in this document.",
-            "confidence": 0.0,
-            "confident": False,
-            "context_snippet": "",
-            "chunks_searched": chunks_searched,
+            "answer": NO_ANSWER, "confidence": 0.0, "confident": False,
+            "chunks_searched": len(index.chunks), "sources": [],
         }
 
-    # Extract a snippet of surrounding context (±200 chars around answer)
-    context_snippet = raw.get("context_snippet", "")
+    text = llm.plain_text(
+        llm.complete(build_messages(question, excerpts, title), max_tokens=700, temperature=0.1)["text"]
+    )
+
+    found = NO_ANSWER_MARK not in text
+    answer = text.replace(NO_ANSWER_MARK, "").strip()
+    if not found:
+        answer = f"{NO_ANSWER} {answer}".strip() if answer else NO_ANSWER
+
+    cited = [n for n in retrieval.cited_numbers(answer) if 1 <= n <= len(excerpts)]
+    sources = [
+        {"n": e["n"], "section": e["section"], "excerpt": re.sub(r"\s+", " ", e["text"])[:240]}
+        for e in excerpts
+        if e["n"] in cited
+    ] if found else []
 
     return {
         "answer": answer,
-        "confidence": round(score, 4),
-        "confident": score >= CONFIDENCE_THRESHOLD,
-        "context_snippet": context_snippet,
-        "chunks_searched": chunks_searched,
+        # Best cosine similarity between the question and a retrieved chunk: a rough
+        # signal of how well the document covers the question, not a probability.
+        "confidence": round(best_similarity, 4),
+        "confident": found,
+        "chunks_searched": len(index.chunks),
+        "sources": sources,
     }
-
-
-def _cuda_available() -> bool:
-    try:
-        import torch
-        return torch.cuda.is_available()
-    except ImportError:
-        return False

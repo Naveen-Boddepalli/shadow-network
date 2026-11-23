@@ -1,4 +1,3 @@
-// src/components/NoteCard.jsx
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getDownloadUrl } from '../services/api';
@@ -7,7 +6,7 @@ const NoteCard = ({ note, onDelete, showScore }) => {
   const [deleting, setDeleting] = useState(false);
 
   const handleDelete = async () => {
-    if (!window.confirm(`Delete "${note.title}"? This removes metadata only — file stays on IPFS.`)) return;
+    if (!window.confirm(`Delete "${note.title}"? The file itself stays on IPFS.`)) return;
     setDeleting(true);
     try { await onDelete(note.id); }
     catch (err) { alert(err.message); setDeleting(false); }
@@ -106,7 +105,7 @@ const NoteCard = ({ note, onDelete, showScore }) => {
       {/* CID row */}
       <div className="flex items-center gap-8 mt-8">
         <span className="text-sm text-muted">CID:</span>
-        <span className="cid">{note.cid?.slice(0, 20)}…{note.cid?.slice(-8)}</span>
+        <span className="cid" title={note.cid}>{note.cid?.slice(0, 20)}…{note.cid?.slice(-8)}</span>
       </div>
     </div>
   );

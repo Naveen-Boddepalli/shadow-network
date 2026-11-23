@@ -1,4 +1,3 @@
-// src/pages/Health.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import { getHealth } from '../services/api';
 import { useP2P } from '../context/P2PContext';
@@ -51,15 +50,19 @@ const Health = () => {
           <>
             <StatusRow label="API Server"   value={health.server   || '—'} ok={health.server   === 'ok'} />
             <StatusRow label="MongoDB"      value={health.mongodb  || '—'} ok={health.mongodb  === 'ok'} />
-            <StatusRow label="IPFS (Kubo)"  value={health.ipfs     || '—'} ok={health.ipfs     === 'ok'} />
+            <StatusRow
+              label={`IPFS${health.ipfsProvider ? ` (${health.ipfsProvider === 'pinata' ? 'Pinata' : 'Kubo'})` : ''}`}
+              value={health.ipfs || '—'} ok={health.ipfs === 'ok'} />
             <StatusRow label="AI Engine"    value={health.aiEngine || '—'} ok={health.aiEngine === 'ok'} />
             {health.aiModels && (
               <>
-                <StatusRow label="  Summarizer" value={health.aiModels.summarizer} ok={health.aiModels.summarizer === 'loaded'} />
-                <StatusRow label="  Q&A model"  value={health.aiModels.qa}         ok={health.aiModels.qa         === 'loaded'} />
+                {/* Models load on first use, so "not_loaded" after a restart is normal */}
+                <StatusRow label="Summarizer model" value={health.aiModels.summarizer} ok={health.aiModels.summarizer === 'loaded' || undefined} />
+                <StatusRow label="Q&A model"        value={health.aiModels.qa}         ok={health.aiModels.qa         === 'loaded' || undefined} />
+                <StatusRow label="Embedding model"  value={health.aiModels.embeddings} ok={health.aiModels.embeddings === 'loaded' || undefined} />
               </>
             )}
-            {health.ipfsNodeId && (
+            {health.ipfsProvider === 'kubo' && health.ipfsNodeId && (
               <div style={{ paddingTop: 12 }}>
                 <div className="text-sm text-muted" style={{ marginBottom: 4 }}>IPFS Node ID</div>
                 <div className="cid">{health.ipfsNodeId}</div>
@@ -86,14 +89,14 @@ const Health = () => {
 
       {/* Quick start guide */}
       <div className="card">
-        <h2 className="section-title">Quick Start</h2>
+        <h2 className="section-title">Running locally</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontFamily: 'var(--mono)', fontSize: 13 }}>
           {[
-            ['Terminal 1', 'ipfs daemon'],
-            ['Terminal 2', 'mongod'],
-            ['Terminal 3', 'cd ai-engine && uvicorn main:app --port 8000'],
-            ['Terminal 4', 'cd backend && npm run dev'],
-            ['Terminal 5', 'cd frontend && npm start'],
+            ['IPFS',      'ipfs daemon'],
+            ['MongoDB',   'mongod'],
+            ['AI engine', 'cd ai-engine && uvicorn main:app --port 8000'],
+            ['Backend',   'cd backend && npm run dev'],
+            ['Frontend',  'cd frontend && npm run dev'],
           ].map(([term, cmd]) => (
             <div key={term} style={{
               display: 'flex', gap: 12, alignItems: 'center',

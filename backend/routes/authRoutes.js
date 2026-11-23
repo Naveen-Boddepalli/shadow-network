@@ -1,13 +1,19 @@
-// routes/authRoutes.js
-// POST /api/v1/auth/token — exchange shared secret for a signed JWT
-
-const express = require('express');
-const router  = express.Router();
+const express   = require('express');
+const rateLimit = require('express-rate-limit');
 const { issueToken } = require('../controllers/authController');
 
-// POST /api/v1/auth/token
-// Body: { "secret": "<API_SECRET>" }
-// Returns: { "token": "<jwt>", "expiresIn": "24h" }
-router.post('/auth/token', issueToken);
+const router = express.Router();
+
+// The shared secret is the only credential, so throttle guessing.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many login attempts. Try again in 15 minutes.' },
+});
+
+// POST /api/v1/auth/token   body: { "secret": "<API_SECRET>" }
+router.post('/auth/token', loginLimiter, issueToken);
 
 module.exports = router;

@@ -1,29 +1,31 @@
-// controllers/healthController.js
-// GET /health — confirms server, DB, and IPFS are all alive.
-// Great for debugging "is it running?" questions.
+// GET /health — reports the status of MongoDB, IPFS and the AI engine.
 
 const mongoose = require('mongoose');
 const { getIPFSNodeInfo } = require('../services/ipfsService');
+const { checkAIEngineHealth } = require('../services/aiService');
 
 const healthCheck = async (req, res) => {
   const health = {
-    server: 'ok',
+    server:    'ok',
     timestamp: new Date().toISOString(),
-    mongodb: 'unknown',
-    ipfs: 'unknown',
+    mongodb:   mongoose.connection.readyState === 1 ? 'ok' : 'disconnected',
   };
 
-  // Check MongoDB
-  health.mongodb = mongoose.connection.readyState === 1 ? 'ok' : 'disconnected';
+  const [ipfs, ai] = await Promise.all([
+    getIPFSNodeInfo().then((info) => ({ ok: true, ...info }), (err) => ({ ok: false, error: err.message })),
+    checkAIEngineHealth(),
+  ]);
 
-  // Check IPFS
-  try {
-    const ipfsInfo = await getIPFSNodeInfo();
-    health.ipfs = 'ok';
-    health.ipfsNodeId = ipfsInfo.nodeId;
-  } catch (_) {
-    health.ipfs = 'disconnected — run: ipfs daemon';
+  health.ipfs = ipfs.ok ? 'ok' : 'disconnected';
+  if (ipfs.ok) {
+    health.ipfsProvider = ipfs.provider;
+    health.ipfsNodeId   = ipfs.nodeId;
   }
+
+  // The AI engine is optional for core features (upload, browse, keyword search),
+  // so it's reported but doesn't make the API unhealthy.
+  health.aiEngine = ai.ok ? (ai.status === 'ok' ? 'ok' : 'degraded') : 'unreachable';
+  if (ai.ok && ai.models) health.aiModels = ai.models;
 
   const isHealthy = health.mongodb === 'ok' && health.ipfs === 'ok';
   res.status(isHealthy ? 200 : 503).json({ success: isHealthy, health });

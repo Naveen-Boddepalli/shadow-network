@@ -1,113 +1,120 @@
-// backend/services/ipfsService.js  —  DEPLOYMENT VERSION
-// Uses Pinata cloud IPFS when keys are set; falls back to local Kubo for dev.
+// IPFS storage. Uses Pinata when PINATA_API_KEY/PINATA_SECRET_KEY are set
+// (production); otherwise talks to a local Kubo node (development).
 
-const https = require('https');
-const http  = require('http');
+const { httpError } = require('../utils/httpError');
 
 const PINATA_API_KEY    = process.env.PINATA_API_KEY;
 const PINATA_SECRET_KEY = process.env.PINATA_SECRET_KEY;
-const PINATA_GATEWAY    = process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud';
+const PINATA_GATEWAY    = (process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud').replace(/\/$/, '');
+const usePinata         = Boolean(PINATA_API_KEY && PINATA_SECRET_KEY);
 
-// ── Upload ─────────────────────────────────────────────────────
-const uploadToIPFS = async (fileBuffer, fileName) => {
-  if (PINATA_API_KEY && PINATA_SECRET_KEY) return uploadToPinata(fileBuffer, fileName);
-  return uploadToKubo(fileBuffer, fileName);
+const pinataHeaders = {
+  pinata_api_key:        PINATA_API_KEY,
+  pinata_secret_api_key: PINATA_SECRET_KEY,
 };
 
-const uploadToPinata = (fileBuffer, fileName) => {
-  return new Promise((resolve, reject) => {
-    const boundary = '----FormBoundary' + Math.random().toString(36).slice(2);
-    const ext = fileName.split('.').pop().toLowerCase();
-    const mimeMap = {
-      pdf: 'application/pdf', txt: 'text/plain',
-      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      doc: 'application/msword', png: 'image/png',
-      jpg: 'image/jpeg', jpeg: 'image/jpeg', zip: 'application/zip',
-    };
-    const mimeType = mimeMap[ext] || 'application/octet-stream';
-    const header = Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`
-    );
-    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body   = Buffer.concat([header, fileBuffer, footer]);
-
-    const req = https.request({
-      hostname: 'api.pinata.cloud', port: 443,
-      path: '/pinning/pinFileToIPFS', method: 'POST',
-      headers: {
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'Content-Length': body.length,
-        'pinata_api_key': PINATA_API_KEY,
-        'pinata_secret_api_key': PINATA_SECRET_KEY,
-      },
-    }, (res) => {
-      let data = '';
-      res.on('data', (c) => (data += c));
-      res.on('end', () => {
-        try {
-          const p = JSON.parse(data);
-          if (p.IpfsHash) resolve(p.IpfsHash);
-          else reject(new Error(`Pinata: ${JSON.stringify(p)}`));
-        } catch (e) { reject(new Error('Invalid Pinata response')); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(60000, () => { req.destroy(); reject(new Error('Pinata upload timed out')); });
-    req.write(body);
-    req.end();
-  });
-};
-
-// ── Download ───────────────────────────────────────────────────
-const downloadFromIPFS = (cid) => fetchFromUrl(`${PINATA_GATEWAY}/ipfs/${cid}`);
-
-const fetchFromUrl = (url) => new Promise((resolve, reject) => {
-  const client = url.startsWith('https') ? https : http;
-  client.get(url, { timeout: 30000 }, (res) => {
-    if (res.statusCode === 301 || res.statusCode === 302)
-      return fetchFromUrl(res.headers.location).then(resolve).catch(reject);
-    if (res.statusCode === 404) return reject(new Error('File not found on IPFS'));
-    const chunks = [];
-    res.on('data', (c) => chunks.push(c));
-    res.on('end', () => resolve(Buffer.concat(chunks)));
-  }).on('error', reject);
-});
-
-// ── Kubo fallback (local dev) ──────────────────────────────────
-const uploadToKubo = async (fileBuffer, fileName) => {
-  const { create } = require('kubo-rpc-client');
-  const ipfs = create({ host: process.env.IPFS_HOST || '127.0.0.1', port: 5001, protocol: 'http' });
-  const result = await ipfs.add({ path: fileName, content: fileBuffer }, { wrapWithDirectory: false });
-  const cid = result.cid.toString();
-  // Explicitly pin the file so it survives garbage collection runs.
-  // `ipfs.add` adds to the blockstore but does not guarantee a persistent pin.
-  await ipfs.pin.add(cid);
-  return cid;
-};
-
-// ── Health check ───────────────────────────────────────────────
-const getIPFSNodeInfo = async () => {
-  if (PINATA_API_KEY && PINATA_SECRET_KEY) {
-    return new Promise((resolve, reject) => {
-      https.get({
-        hostname: 'api.pinata.cloud', path: '/data/testAuthentication',
-        headers: { 'pinata_api_key': PINATA_API_KEY, 'pinata_secret_api_key': PINATA_SECRET_KEY },
-        timeout: 5000,
-      }, (res) => {
-        let d = '';
-        res.on('data', (c) => (d += c));
-        res.on('end', () => {
-          res.statusCode === 200
-            ? resolve({ nodeId: 'pinata-cloud', agentVersion: 'Pinata IPFS' })
-            : reject(new Error('Pinata auth failed — check your API keys'));
-        });
-      }).on('error', reject);
+// ── Kubo (local node) ──────────────────────────────────────────
+// kubo-rpc-client is ESM-only, so it has to be loaded with import().
+let kuboClient;
+const getKubo = async () => {
+  if (!kuboClient) {
+    const { create } = await import('kubo-rpc-client');
+    kuboClient = create({
+      host:     process.env.IPFS_HOST     || '127.0.0.1',
+      port:     Number(process.env.IPFS_PORT) || 5001,
+      protocol: process.env.IPFS_PROTOCOL || 'http',
     });
   }
-  const { create } = require('kubo-rpc-client');
-  const ipfs = create({ host: process.env.IPFS_HOST || '127.0.0.1', port: 5001, protocol: 'http' });
-  const id = await ipfs.id();
-  return { nodeId: id.id.toString(), agentVersion: id.agentVersion };
+  return kuboClient;
+};
+
+const kuboError = (err) =>
+  err.cause?.code === 'ECONNREFUSED' || err.code === 'ECONNREFUSED'
+    ? httpError(503, 'Local IPFS node is not running. Start it with: ipfs daemon')
+    : err;
+
+// ── Upload ─────────────────────────────────────────────────────
+
+const uploadToPinata = async (fileBuffer, fileName, mimeType) => {
+  const form = new FormData();
+  form.append('file', new Blob([fileBuffer], { type: mimeType }), fileName);
+
+  let res;
+  try {
+    res = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: pinataHeaders,
+      body: form,
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (err) {
+    throw httpError(503, `Could not reach Pinata: ${err.name === 'TimeoutError' ? 'upload timed out' : err.message}`);
+  }
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.IpfsHash) {
+    const reason = data.error?.details || data.error?.reason || data.error || `HTTP ${res.status}`;
+    throw httpError(502, `Pinata upload failed: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}`);
+  }
+  return data.IpfsHash;
+};
+
+const uploadToKubo = async (fileBuffer) => {
+  try {
+    const ipfs = await getKubo();
+    // ipfs.add pins by default; the explicit pin is a no-op safeguard against GC.
+    const { cid } = await ipfs.add(fileBuffer, { pin: true });
+    await ipfs.pin.add(cid);
+    return cid.toString();
+  } catch (err) {
+    throw kuboError(err);
+  }
+};
+
+const uploadToIPFS = (fileBuffer, fileName, mimeType = 'application/octet-stream') =>
+  usePinata ? uploadToPinata(fileBuffer, fileName, mimeType) : uploadToKubo(fileBuffer);
+
+// ── Download ───────────────────────────────────────────────────
+
+const downloadFromGateway = async (cid) => {
+  let res;
+  try {
+    res = await fetch(`${PINATA_GATEWAY}/ipfs/${cid}`, { signal: AbortSignal.timeout(30_000) });
+  } catch (err) {
+    throw httpError(504, `IPFS gateway did not respond: ${err.name === 'TimeoutError' ? 'timed out' : err.message}`);
+  }
+  if (res.status === 404) throw httpError(404, 'File not found on IPFS');
+  if (!res.ok) throw httpError(502, `IPFS gateway error (HTTP ${res.status})`);
+  return Buffer.from(await res.arrayBuffer());
+};
+
+const downloadFromKubo = async (cid) => {
+  try {
+    const ipfs = await getKubo();
+    const chunks = [];
+    for await (const chunk of ipfs.cat(cid, { timeout: 30_000 })) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  } catch (err) {
+    throw kuboError(err);
+  }
+};
+
+const downloadFromIPFS = (cid) => (usePinata ? downloadFromGateway(cid) : downloadFromKubo(cid));
+
+// ── Health check ───────────────────────────────────────────────
+
+const getIPFSNodeInfo = async () => {
+  if (usePinata) {
+    const res = await fetch('https://api.pinata.cloud/data/testAuthentication', {
+      headers: pinataHeaders,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error('Pinata authentication failed; check the API keys');
+    return { provider: 'pinata', nodeId: 'pinata-cloud' };
+  }
+  const ipfs = await getKubo();
+  const id = await ipfs.id({ timeout: 5000 });
+  return { provider: 'kubo', nodeId: id.id.toString(), agentVersion: id.agentVersion };
 };
 
 module.exports = { uploadToIPFS, downloadFromIPFS, getIPFSNodeInfo };

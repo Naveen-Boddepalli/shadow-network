@@ -1,257 +1,254 @@
-# ai-engine/embeddings.py
-# Manages vector embeddings for semantic search using MongoDB Atlas Vector Search.
+# Embeddings for retrieval and semantic search.
 #
-# Why MongoDB instead of FAISS files?
-#   Render free tier has an ephemeral filesystem — local files (embeddings.faiss,
-#   id_map.json) are wiped on every service restart (~15 min inactivity).
-#   MongoDB Atlas M0 (free) provides persistent vector storage with built-in
-#   approximate nearest-neighbour search via the $vectorSearch aggregation stage.
+# Runs all-MiniLM-L6-v2 as an 8-bit quantized ONNX model (the same model and
+# quantization Tessera uses) on onnxruntime: ~23 MB on disk and ~100 MB of RAM,
+# with no PyTorch. Vectors are 384-dim and unit length, so they are compatible
+# with the vectors earlier versions stored and with the existing Atlas index.
 #
-# How it works:
-#   1. A document's text is converted into a 384-dim vector using sentence-transformers.
-#   2. The vector + note_id are upserted into the MongoDB `embeddings` collection.
-#   3. Semantic search runs a $vectorSearch aggregation pipeline on Atlas.
+# Two uses:
+#   - chunk vectors, stored per document by doc_index.py for RAG retrieval;
+#   - one document vector per note (the mean of its chunk vectors) in the
+#     `embeddings` collection, searched across notes with Atlas $vectorSearch.
 #
-# Required Atlas setup (one-time, in Atlas UI):
-#   Database: shadow-network  Collection: embeddings
-#   Create an "Atlas Vector Search" index named "vector_index":
-#   {
-#     "fields": [{
-#       "type": "vector",
-#       "path": "embedding",
-#       "numDimensions": 384,
-#       "similarity": "cosine"
-#     }]
-#   }
+# One-time Atlas setup: on the `embeddings` collection, create an Atlas Vector
+# Search index named "vector_index":
+#   { "fields": [{ "type": "vector", "path": "embedding",
+#                  "numDimensions": 384, "similarity": "cosine" }] }
 
 import os
-import numpy as np
-from sentence_transformers import SentenceTransformer
-from pymongo import MongoClient, UpdateOne
-from pymongo.errors import OperationFailure
+import threading
+from pathlib import Path
 
-# ── Config ─────────────────────────────────────────────────────
-MODEL_NAME    = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-EMBEDDING_DIM = 384          # all-MiniLM-L6-v2 always outputs 384-dim vectors
+import httpx
+import numpy as np
+from pymongo import MongoClient
+from pymongo.errors import OperationFailure, PyMongoError
+
+MODEL_REPO    = os.getenv("EMBEDDING_ONNX_MODEL", "Xenova/all-MiniLM-L6-v2")
+MODEL_FILES   = {"model.onnx": "onnx/model_quantized.onnx", "tokenizer.json": "tokenizer.json"}
+MODEL_DIR     = Path(os.getenv("MODEL_CACHE_DIR", Path(__file__).parent / ".model-cache")) / MODEL_REPO.replace("/", "--")
+EMBEDDING_DIM = 384  # must match the Atlas index
+MAX_TOKENS    = 256  # MiniLM was trained on 256 word pieces; it ignores the rest anyway
+BATCH_SIZE    = 16   # small batches keep memory flat on large documents
+
 MONGO_URI     = os.getenv("MONGO_URI", "")
 DB_NAME       = os.getenv("MONGO_DB_NAME", "shadow-network")
 COLLECTION    = "embeddings"
 VECTOR_INDEX  = "vector_index"
 
-# ── Module-level state ─────────────────────────────────────────
-_model: SentenceTransformer | None = None
-_mongo_collection = None   # pymongo Collection
+_model = None
+_model_lock = threading.Lock()
+_db = None
 
 
-# ── Initialisation ─────────────────────────────────────────────
+class VectorStoreError(RuntimeError):
+    """MongoDB is misconfigured or unreachable."""
 
-def _get_model() -> SentenceTransformer:
+
+# ── Model ──────────────────────────────────────────────────────
+
+def ensure_model_files() -> Path:
+    """Download the model once into MODEL_DIR. Render runs this at build time."""
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    for local, remote in MODEL_FILES.items():
+        target = MODEL_DIR / local
+        if target.exists() and target.stat().st_size > 0:
+            continue
+        url = f"https://huggingface.co/{MODEL_REPO}/resolve/main/{remote}"
+        print(f"Downloading {url}")
+        tmp = target.with_suffix(".part")
+        with httpx.stream("GET", url, follow_redirects=True, timeout=120.0) as r:
+            r.raise_for_status()
+            with open(tmp, "wb") as f:
+                for block in r.iter_bytes():
+                    f.write(block)
+        tmp.replace(target)
+    return MODEL_DIR
+
+
+class _OnnxMiniLM:
+    def __init__(self, model_dir: Path):
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+
+        options = ort.SessionOptions()
+        # Render's free instance has a fraction of one CPU; extra threads only contend.
+        options.intra_op_num_threads = int(os.getenv("ONNX_THREADS", "1"))
+        options.inter_op_num_threads = 1
+        self.session = ort.InferenceSession(str(model_dir / "model.onnx"), options, providers=["CPUExecutionProvider"])
+        self.input_names = {i.name for i in self.session.get_inputs()}
+
+        self.tokenizer = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
+        self.tokenizer.enable_truncation(max_length=MAX_TOKENS)
+        self.tokenizer.enable_padding()
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        out = []
+        for start in range(0, len(texts), BATCH_SIZE):
+            encodings = self.tokenizer.encode_batch(texts[start:start + BATCH_SIZE])
+            ids = np.array([e.ids for e in encodings], dtype=np.int64)
+            mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
+            feeds = {"input_ids": ids, "attention_mask": mask}
+            if "token_type_ids" in self.input_names:
+                feeds["token_type_ids"] = np.zeros_like(ids)
+            hidden = self.session.run(None, feeds)[0]  # (batch, tokens, 384)
+            # Mean pooling over real tokens, then L2 normalisation (as sentence-transformers does).
+            weights = mask[:, :, None].astype(np.float32)
+            pooled = (hidden * weights).sum(axis=1) / np.clip(weights.sum(axis=1), 1e-9, None)
+            out.append(pooled)
+        vectors = np.vstack(out) if out else np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
+        return _normalize_rows(vectors)
+
+
+def is_loaded() -> bool:
+    return _model is not None
+
+
+def _get_model():
     global _model
     if _model is None:
-        print(f"⏳ Loading embedding model: {MODEL_NAME}...")
-        _model = SentenceTransformer(MODEL_NAME)
-        print("✅ Embedding model loaded")
+        with _model_lock:
+            if _model is None:
+                print(f"Loading embedding model {MODEL_REPO} (ONNX, int8)...")
+                _model = _OnnxMiniLM(ensure_model_files())
+                print("Embedding model loaded")
     return _model
 
 
-def _get_collection():
-    """
-    Returns the MongoDB embeddings collection, creating the client once.
-    Also ensures a unique index on note_id to prevent duplicates.
-    """
-    global _mongo_collection
-
-    if _mongo_collection is not None:
-        return _mongo_collection
-
-    if not MONGO_URI:
-        raise RuntimeError(
-            "MONGO_URI environment variable is not set. "
-            "Add it to your Render service environment variables."
-        )
-
-    print("🔌 Connecting to MongoDB Atlas...")
-    client = MongoClient(MONGO_URI)
-    db = client[DB_NAME]
-    col = db[COLLECTION]
-
-    # Ensure unique index on note_id (idempotent — no-op if already exists)
-    col.create_index("note_id", unique=True, background=True)
-
-    # Smoke-test the connection
-    client.admin.command("ping")
-    print(f"✅ Connected to MongoDB Atlas — db={DB_NAME}, collection={COLLECTION}")
-
-    _mongo_collection = col
-    return _mongo_collection
+def _normalize_rows(vectors: np.ndarray) -> np.ndarray:
+    vectors = np.atleast_2d(vectors).astype(np.float32)
+    return vectors / np.clip(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12, None)
 
 
-# ── Public API ─────────────────────────────────────────────────
+def embed_texts(texts: list[str]) -> np.ndarray:
+    """(n, 384) unit vectors."""
+    if not texts:
+        return np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
+    return _get_model().encode(texts)
+
 
 def embed_text(text: str) -> np.ndarray:
-    """
-    Convert a text string into a normalised 384-dim vector.
-    L2-normalisation makes cosine similarity equivalent to dot product,
-    which is what Atlas Vector Search uses with similarity="cosine".
+    """One unit vector for a short text (e.g. a query)."""
+    return embed_texts([text])[0]
 
-    Returns: shape (384,) float32 numpy array
-    """
-    model = _get_model()
-    vector = model.encode(text, convert_to_numpy=True, show_progress_bar=False)
-    vector = vector / np.linalg.norm(vector)
-    return vector.astype(np.float32)
+
+def document_vector(chunk_vectors: np.ndarray) -> np.ndarray:
+    """A whole document as the normalised mean of its chunk vectors."""
+    if len(chunk_vectors) == 0:
+        return np.zeros(EMBEDDING_DIM, dtype=np.float32)
+    return _normalize_rows(chunk_vectors.mean(axis=0))[0]
+
+
+# ── MongoDB ────────────────────────────────────────────────────
+
+def get_db():
+    """The engine's database, connected once. Raises VectorStoreError if unavailable."""
+    global _db
+    if _db is not None:
+        return _db
+    if not MONGO_URI:
+        raise VectorStoreError("MONGO_URI is not set for the AI engine")
+    try:
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        client.admin.command("ping")
+        db = client[DB_NAME]
+        db[COLLECTION].create_index("note_id", unique=True)
+    except PyMongoError as e:
+        raise VectorStoreError(f"Cannot connect to MongoDB: {e}") from e
+    print(f"Connected to MongoDB ({DB_NAME})")
+    _db = db
+    return _db
+
+
+def _get_collection():
+    return get_db()[COLLECTION]
+
+
+def upsert_document_vector(note_id: str, vector: np.ndarray, *, cid: str | None, preview: str) -> dict:
+    """Store a note's document vector. Safe to call repeatedly."""
+    fields = {"note_id": note_id, "embedding": vector.tolist(), "text_preview": preview[:200]}
+    if cid:
+        fields["cid"] = cid
+    result = _get_collection().update_one({"note_id": note_id}, {"$set": fields}, upsert=True)
+    return {
+        "indexed": True,
+        "note_id": note_id,
+        "reason":  None if result.upserted_id is not None else "updated_existing",
+    }
 
 
 def add_document(note_id: str, text: str) -> dict:
-    """
-    Embed a document's text and upsert it into the MongoDB embeddings collection.
+    """Embed raw text as a note's document vector (used by /reindex)."""
+    from extractor import chunk_document, chunk_search_text
 
-    Called after a successful file upload so the document becomes
-    semantically searchable immediately.
-
-    Args:
-        note_id: MongoDB _id string for the Note
-        text:    Plain text content of the document
-
-    Returns:
-        { "indexed": True/False, "note_id": str, "reason": str | None }
-    """
-    col = _get_collection()
-
-    # Generate embedding
-    vector = embed_text(text)
-
-    # Upsert by note_id — safe to call multiple times
-    result = col.update_one(
-        {"note_id": note_id},
-        {"$set": {
-            "note_id":      note_id,
-            "embedding":    vector.tolist(),   # MongoDB stores as array of floats
-            "text_preview": text[:200],        # handy for debugging in Atlas UI
-        }},
-        upsert=True,
-    )
-
-    was_new = result.upserted_id is not None
-    return {
-        "indexed":  True,
-        "note_id":  note_id,
-        "reason":   None if was_new else "updated_existing",
-    }
+    chunks = chunk_document(text) or [{"section": "", "text": text}]
+    vectors = embed_texts([chunk_search_text(c) for c in chunks])
+    return upsert_document_vector(note_id, document_vector(vectors), cid=None, preview=text)
 
 
 def semantic_search(query: str, k: int = 10) -> list[dict]:
-    """
-    Find the k most semantically similar documents to the query using
-    MongoDB Atlas $vectorSearch aggregation pipeline.
-
-    Args:
-        query: Natural language search string
-        k:     Number of results to return (default 10, max 50)
-
-    Returns:
-        List of { "note_id": str, "score": float, "rank": int }
-        sorted by score descending (most relevant first).
-    """
+    """Return up to k [{note_id, score, rank}] ordered by similarity to the query."""
     col = _get_collection()
-    k = min(k, 50)
-
+    k = max(1, min(k, 50))
     query_vector = embed_text(query)
 
-    try:
-        pipeline = [
-            {
-                "$vectorSearch": {
-                    "index":         VECTOR_INDEX,
-                    "path":          "embedding",
-                    "queryVector":   query_vector.tolist(),
-                    "numCandidates": k * 10,   # Wider candidate pool → better recall
-                    "limit":         k,
-                }
-            },
-            {
-                "$project": {
-                    "_id":   0,
-                    "note_id": 1,
-                    "score": {"$meta": "vectorSearchScore"},
-                }
-            },
-        ]
-
-        docs = list(col.aggregate(pipeline))
-
-    except OperationFailure as e:
-        # Friendly error if the Atlas vector index hasn't been created yet
-        if "index" in str(e).lower() or "vectorSearch" in str(e):
-            raise RuntimeError(
-                "Atlas Vector Search index 'vector_index' not found. "
-                "Please create it in the Atlas UI: "
-                "Database → shadow-network → embeddings collection → "
-                "Search Indexes → Create Index (Vector Search) → "
-                "name it 'vector_index', path='embedding', numDimensions=384, similarity='cosine'."
-            ) from e
-        raise
-
-    results = [
+    pipeline = [
         {
-            "note_id": doc["note_id"],
-            "score":   round(float(doc["score"]), 4),
-            "rank":    rank + 1,
-        }
-        for rank, doc in enumerate(docs)
+            "$vectorSearch": {
+                "index":         VECTOR_INDEX,
+                "path":          "embedding",
+                "queryVector":   query_vector.tolist(),
+                "numCandidates": max(k * 10, 100),
+                "limit":         k,
+            }
+        },
+        {"$project": {"_id": 0, "note_id": 1, "score": {"$meta": "vectorSearchScore"}}},
     ]
-    return results
+
+    try:
+        docs = list(col.aggregate(pipeline))
+    except OperationFailure as e:
+        raise VectorStoreError(
+            f"Atlas $vectorSearch failed ({e.details.get('errmsg', e) if e.details else e}). "
+            f"Check that a Vector Search index named '{VECTOR_INDEX}' exists on "
+            f"{DB_NAME}.{COLLECTION} (path 'embedding', {EMBEDDING_DIM} dimensions, cosine). "
+            "$vectorSearch is only available on MongoDB Atlas."
+        ) from e
+
+    return [
+        {"note_id": doc["note_id"], "score": round(float(doc["score"]), 4), "rank": rank}
+        for rank, doc in enumerate(docs, start=1)
+    ]
 
 
 def remove_document(note_id: str) -> dict:
-    """
-    Permanently remove a document's embedding from MongoDB.
+    """Delete a note's vector; returns the cid it was stored with (if any)."""
+    doc = _get_collection().find_one_and_delete({"note_id": note_id}, projection={"cid": 1})
+    return {"removed": doc is not None, "cid": (doc or {}).get("cid")}
 
-    Unlike FAISS, MongoDB supports true deletion — no rebuild needed.
 
-    Returns: { "removed": bool }
-    """
-    col = _get_collection()
-    result = col.delete_one({"note_id": note_id})
-
-    if result.deleted_count == 0:
-        return {"removed": False, "reason": "not_found"}
-    return {"removed": True}
+def cid_in_use(cid: str) -> bool:
+    return _get_collection().count_documents({"cid": cid}, limit=1) > 0
 
 
 def get_index_stats() -> dict:
-    """Return stats about the current embeddings collection. Used in /health."""
     col = _get_collection()
-    total = col.count_documents({})
     return {
-        "total_vectors":  total,
-        "embedding_dim":  EMBEDDING_DIM,
-        "model":          MODEL_NAME,
-        "storage":        "MongoDB Atlas Vector Search",
-        "collection":     f"{DB_NAME}.{COLLECTION}",
-        "index_name":     VECTOR_INDEX,
+        "total_vectors": col.estimated_document_count(),
+        "embedding_dim": EMBEDDING_DIM,
+        "model":         MODEL_REPO,
+        "collection":    f"{DB_NAME}.{COLLECTION}",
+        "index_name":    VECTOR_INDEX,
     }
 
 
-def rebuild_index_from_mongo(note_docs: list[dict]) -> dict:
-    """
-    Re-embed and re-upsert a list of { note_id, text } dicts.
-    Used by the /rebuild-index endpoint to re-index all notes from MongoDB.
-
-    Args:
-        note_docs: list of { "note_id": str, "text": str }
-
-    Returns:
-        { "reindexed": int, "errors": list }
-    """
-    reindexed = 0
-    errors = []
-
+def reindex_documents(note_docs: list[dict]) -> dict:
+    """Re-embed a list of {note_id, text}; failures are collected, not raised."""
+    reindexed, errors = 0, []
     for doc in note_docs:
         try:
             add_document(doc["note_id"], doc["text"])
             reindexed += 1
         except Exception as e:
             errors.append({"note_id": doc.get("note_id"), "error": str(e)})
-
     return {"reindexed": reindexed, "errors": errors}

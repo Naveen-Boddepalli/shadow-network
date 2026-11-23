@@ -1,83 +1,88 @@
-// src/services/api.js
-// All HTTP calls to the Node.js backend (/api/v1).
-// Components never use axios/fetch directly — they call these functions.
+// HTTP client for the Node backend (/api/v1). Components call these functions
+// rather than using axios directly.
 
 import axios from 'axios';
 
-const BASE = process.env.REACT_APP_API_URL || '/api/v1';
+const BASE = import.meta.env.VITE_API_URL || '/api/v1';
+
+export const TOKEN_KEY = 'shadow_token';
+// Fired when the backend rejects the stored token, so AuthContext can log out.
+export const AUTH_EXPIRED_EVENT = 'shadow:auth-expired';
+
+const readToken = () => {
+  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+};
 
 const api = axios.create({
   baseURL: BASE,
-  timeout: 120_000,   // 2 min — AI endpoints can be slow on first model load
+  timeout: 120_000, // AI endpoints can be slow while a model loads
 });
 
-// ── Interceptor: normalize errors ──────────────────────────────
+api.interceptors.request.use((config) => {
+  const token = readToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
 api.interceptors.response.use(
   (res) => res.data,
   (err) => {
+    if (err.response?.status === 401 && err.config?.headers?.Authorization) {
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+    }
     const message =
       err.response?.data?.error ||
       err.response?.data?.message ||
-      err.message ||
+      (err.code === 'ECONNABORTED' ? 'Request timed out' : err.message) ||
       'Unknown error';
     return Promise.reject(new Error(message));
   }
 );
 
-// ── Files (Phase 1) ────────────────────────────────────────────
+// ── Auth ───────────────────────────────────────────────────────
+
+export const login = (secret) => api.post('/auth/token', { secret });
+
+// ── Files ──────────────────────────────────────────────────────
 
 /**
- * Upload a file with metadata.
- * @param {FormData} formData  — must contain: file, title, subject, tags, uploadedBy
- * @param {function} onProgress — (percent: number) => void
+ * @param {FormData} formData  file, title, subject, tags, uploadedBy
+ * @param {(percent: number) => void} onProgress
  */
 export const uploadFile = (formData, onProgress) =>
   api.post('/upload', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: (e) => {
       if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100));
     },
   });
 
-/**
- * Get download URL for a CID.
- * Returns a URL string the browser can navigate to directly.
- */
-export const getDownloadUrl = (cid) => `${BASE}/download/${cid}`;
+export const getDownloadUrl = (cid) => `${BASE}/download/${encodeURIComponent(cid)}`;
 
-// ── Notes (Phase 2) ────────────────────────────────────────────
+// ── Notes ──────────────────────────────────────────────────────
 
-export const getAllNotes = (params = {}) =>
-  api.get('/notes', { params });   // ?subject=&limit=&page=
+export const getAllNotes = (params = {}) => api.get('/notes', { params }); // subject, limit, page
 
-export const getNoteById = (id) =>
-  api.get(`/notes/${id}`);
+export const getNoteById = (id) => api.get(`/notes/${id}`);
 
-export const deleteNote = (id) =>
-  api.delete(`/notes/${id}`);
+export const deleteNote = (id) => api.delete(`/notes/${id}`);
 
-export const searchNotes = (q, limit = 10) =>
-  api.get('/search', { params: { q, limit } });
+export const searchNotes = (q, limit = 10) => api.get('/search', { params: { q, limit } });
 
-// ── AI — Summarize + Q&A (Phase 3) ────────────────────────────
+// ── AI ─────────────────────────────────────────────────────────
 
-export const summarizeNote = (id) =>
-  api.post(`/notes/${id}/summarize`);
+export const summarizeNote = (id) => api.post(`/notes/${id}/summarize`);
 
-export const askQuestion = (id, question) =>
-  api.post(`/notes/${id}/ask`, { question });
+export const askQuestion = (id, question) => api.post(`/notes/${id}/ask`, { question });
 
-export const clearSummaryCache = (id) =>
-  api.delete(`/notes/${id}/summary`);
+export const clearSummaryCache = (id) => api.delete(`/notes/${id}/summary`);
 
-// ── Semantic search (Phase 4) ──────────────────────────────────
+export const semanticSearch = (q, k = 10) => api.get('/semantic-search', { params: { q, k } });
 
-export const semanticSearch = (q, k = 10) =>
-  api.get('/semantic-search', { params: { q, k } });
-
-export const embedNote = (id) =>
-  api.post(`/notes/${id}/embed`);
+export const embedNote = (id) => api.post(`/notes/${id}/embed`);
 
 // ── Health ─────────────────────────────────────────────────────
 
-export const getHealth = () => api.get('/health');
+// The backend answers 503 (with the same body) when a dependency is down;
+// that's still a useful status report, not an error.
+export const getHealth = () =>
+  api.get('/health', { validateStatus: (s) => s === 200 || s === 503 });

@@ -1,7 +1,6 @@
-# render.yaml
-# Render Blueprint — defines both services in one file.
-# Place this at the ROOT of your GitHub repository.
-# Render reads it automatically when you connect your repo.
+# Render Blueprint for the backend and AI engine.
+# Values marked `sync: false` are secrets: Render prompts for them when the
+# Blueprint is first applied, and they're managed in the dashboard after that.
 
 services:
   # ── Node.js Backend ──────────────────────────────────────────
@@ -17,9 +16,8 @@ services:
         value: production
       - key: PORT
         value: 10000
-      # Set these in Render dashboard (don't commit secrets to git):
       - key: MONGO_URI
-        sync: false          # You paste this in Render dashboard
+        sync: false
       - key: PINATA_API_KEY
         sync: false
       - key: PINATA_SECRET_KEY
@@ -27,33 +25,72 @@ services:
       - key: PINATA_GATEWAY
         value: https://gateway.pinata.cloud
       - key: AI_ENGINE_URL
-        sync: false          # Will be the URL of your AI engine service below
+        sync: false          # https://<ai-service>.onrender.com
+      - key: JWT_SECRET
+        sync: false          # long random string; signs login tokens
+      - key: API_SECRET
+        sync: false          # shared secret users enter on the Login page
+      - key: ALLOWED_ORIGINS
+        sync: false          # comma-separated frontend origins, e.g. https://<app>.vercel.app
+      - key: AI_ENGINE_KEY
+        sync: false          # optional; must match the AI engine's AI_ENGINE_KEY
 
   # ── Python AI Engine ─────────────────────────────────────────
   - type: web
     name: shadow-network-ai
     runtime: python
     rootDir: ai-engine
-    buildCommand: pip install -r requirements.txt
+    # Downloads the int8 embedding model (~23 MB) at build time so the first
+    # request after a deploy doesn't wait for it.
+    buildCommand: pip install -r requirements.txt && python -c "import embeddings; embeddings.ensure_model_files()"
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     plan: free
     envVars:
-      - key: SUMMARIZATION_MODEL
-        value: facebook/bart-large-cnn
-      - key: QA_MODEL
-        value: deepset/roberta-base-squad2
-      - key: EMBEDDING_MODEL
-        value: sentence-transformers/all-MiniLM-L6-v2
-      - key: SUMMARY_MAX_LENGTH
-        value: 200
-      - key: SUMMARY_MIN_LENGTH
-        value: 50
-      # IPFS_GATEWAY points to Pinata public gateway
+      - key: PYTHON_VERSION
+        value: 3.11.8
+      # LLM fallback chain (see ai-engine/llm.py). Keys are secrets; set an
+      # unused slot's key to "none".
+      - key: LLM_1_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_1_MODEL
+        value: openai/gpt-oss-120b
+      - key: LLM_1_API_KEY
+        sync: false
+      - key: LLM_2_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_2_MODEL
+        value: qwen/qwen3.8-27b
+      - key: LLM_2_API_KEY
+        sync: false
+      - key: LLM_3_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_3_MODEL
+        value: openai/gpt-oss-20b
+      - key: LLM_3_API_KEY
+        sync: false
       - key: IPFS_GATEWAY
         value: https://gateway.pinata.cloud
-      # MongoDB Atlas — persistent vector search storage
-      # Paste your Atlas connection string in the Render dashboard (do not commit to git)
       - key: MONGO_URI
         sync: false
       - key: MONGO_DB_NAME
         value: shadow-network
+      - key: AI_ENGINE_KEY
+        sync: false          # optional; must match the backend's AI_ENGINE_KEY
+
+  # ── P2P relay (browser peer discovery + WebRTC signalling) ──
+  # Render terminates TLS, so browsers reach it at
+  #   /dns4/<service>.onrender.com/tcp/443/wss
+  # Put that in VITE_P2P_RELAYS for the frontend. The relay derives that
+  # address itself from RENDER_EXTERNAL_HOSTNAME.
+  - type: web
+    name: shadow-network-relay
+    runtime: node
+    rootDir: p2p-relay
+    buildCommand: npm ci
+    startCommand: npm start
+    plan: free
+    envVars:
+      # Stable relay identity across restarts (free tier has no persistent
+      # disk). Optional: browsers learn the peer ID on connect anyway.
+      - key: RELAY_SEED
+        generateValue: true
