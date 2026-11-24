@@ -8,7 +8,7 @@
     "@helia/unixfs": "^7.2.1",
     "@libp2p/bootstrap": "^12.0.25",
     "@libp2p/circuit-relay-v2": "^4.2.7",
-    "@libp2p/gossipsub": "^15.0.23",
+    "@libp2p/gossipsub": "^17.0.0",
     "@libp2p/identify": "^4.1.8",
     "@libp2p/interface": "^3.4.0",
     "@libp2p/peer-id": "^6.0.18",
@@ -16,20 +16,20 @@
     "@libp2p/webrtc": "^6.0.25",
     "@libp2p/websockets": "^10.1.15",
     "@multiformats/multiaddr": "^13.0.3",
-    "axios": "^1.18.1",
+    "axios": "^1.21.1",
     "blockstore-idb": "^3.0.2",
     "datastore-idb": "^4.0.3",
     "helia": "^6.1.4",
     "libp2p": "^3.3.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^7.18.0"
+    "react-router-dom": "^7.18.6"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.2.0",
     "@testing-library/react": "^14.1.2",
     "@vitejs/plugin-react": "^6.0.2",
-    "vite": "^8.0.16"
+    "vite": "^8.3.8"
   },
   "scripts": {
     "dev": "vite",
