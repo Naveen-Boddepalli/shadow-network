@@ -16,10 +16,18 @@ on:
       - 'ai-engine/**'
       - '.github/workflows/render-deployments.yml'
 
+# Least privilege by default; jobs that need more ask for it below.
+permissions:
+  contents: read
+
 jobs:
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # paths-filter lists a PR's changed files through the API
+      pull-requests: read
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       ai_engine: ${{ steps.filter.outputs.ai_engine }}
