@@ -29,7 +29,7 @@ const errorHandler = (err, req, res, next) => {
   }
 
   const status = err.statusCode || 500;
-  if (status >= 500) console.error(`[error] ${req.method} ${req.originalUrl}:`, err);
+  if (status >= 500) console.error('[error] %s %s:', req.method, req.originalUrl, err);
 
   // Don't leak internals on unexpected 500s in production
   const message = status >= 500 && process.env.NODE_ENV === 'production' && !err.expose
