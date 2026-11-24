@@ -226,7 +226,9 @@ async def health():
         stats = await run_in_threadpool(embeddings.get_index_stats)
         mongo_status = "connected"
     except Exception as e:
-        stats = {"error": str(e)}
+        # /health is public: log the details, return only a generic status.
+        print(f"Health check: vector store unavailable: {e!r}")
+        stats = {"error": "vector store unavailable"}
         mongo_status = "error"
 
     return {
